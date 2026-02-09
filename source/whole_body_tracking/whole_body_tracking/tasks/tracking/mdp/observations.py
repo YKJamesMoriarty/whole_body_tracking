@@ -102,44 +102,35 @@ def target_relative_position(env: ManagerBasedEnv, command_name: str, effector_b
     - Y轴: 机器人左侧
     - Z轴: 机器人上方
     
-    为什么不用世界坐标系?
-    - 世界坐标系不随机器人移动旋转，不利于策略迁移
-    - 局部坐标系让网络学到"目标在我前方1米"这样的相对概念
-    
-    为什么不相对于攻击肢体?
-    - 不同肢体(左手/右手/左脚/右脚)攻击时，参考系会变化
-    - 相对于 Root 统一且稳定，无论用哪个肢体攻击都一样
-    
     Stage 1 技巧:
-    - 我们把当前参考动作中"攻击肢体"的目标位置作为 dummy target
-    - 这样网络学到：当肢体移动到 target 位置时，是正确的模仿状态
+    - target = 参考动作中该肢体应该到达的位置
+    - 使用 body_pos_relative_w（已对齐到机器人当前位置）
     
     Stage 2 TODO:
-    - 替换为场景中实际的目标点位置 (例如：对手的头部/身体位置)
+    - 将 target_pos_w 替换为场景中实际的目标点
+    
+    注意：观测和奖励函数都使用相同的 target 来源 (body_pos_relative_w)
     
     Args:
         env: 环境实例
         command_name: 动作命令名称
-        effector_body_name: 攻击肢体名称，用于 Stage 1 生成 dummy target
-                           可选: "right_wrist_yaw_link", "left_wrist_yaw_link",
-                                 "right_ankle_roll_link", "left_ankle_roll_link"
+        effector_body_name: 攻击肢体名称
     
     Returns:
         Tensor (num_envs, 3): 目标在机器人局部坐标系中的位置 [x_前后, y_左右, z_上下]
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     
-    # 获取攻击肢体在 body_names 列表中的索引
-    # 注意: body_names 定义在 flat_env_cfg.py 中
+    # 获取攻击肢体的索引
     try:
         effector_index = command.cfg.body_names.index(effector_body_name)
     except ValueError:
-        # 如果找不到指定的肢体名称，默认使用最后一个 body (通常是手腕)
         effector_index = -1
     
-    # Stage 1: 使用参考动作中该肢体的世界坐标位置作为 "目标"
-    # 这是当前参考帧中该肢体应该到达的位置
-    target_pos_w = command.body_pos_w[:, effector_index]  # (num_envs, 3) 世界坐标
+    # Stage 1: 目标位置 = 参考动作中该肢体的位置（已对齐到机器人当前位置）
+    # body_pos_relative_w: 把参考动作"移动"到机器人当前站立的位置
+    # 这和奖励函数 effector_target_tracking_exp 使用的是**同一个数据源**
+    target_pos_w = command.body_pos_relative_w[:, effector_index]  # (num_envs, 3) 世界坐标
     
     # 获取机器人 Root (Pelvis) 的世界坐标位置和朝向
     robot_root_pos_w = command.robot_anchor_pos_w   # (num_envs, 3)
@@ -147,12 +138,11 @@ def target_relative_position(env: ManagerBasedEnv, command_name: str, effector_b
     
     # 将目标位置从世界坐标系转换到机器人局部坐标系
     # 数学公式: p_local = R_robot^(-1) * (p_target_world - p_robot_world)
-    # subtract_frame_transforms: 计算 target 相对于 robot_root 的局部坐标
     target_pos_b, _ = subtract_frame_transforms(
         robot_root_pos_w,
         robot_root_quat_w,
         target_pos_w,
-        torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=env.device).repeat(env.num_envs, 1),  # 目标朝向无所谓，用单位四元数
+        torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=env.device).repeat(env.num_envs, 1),
     )
     
     return target_pos_b.view(env.num_envs, 3)
@@ -249,37 +239,46 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
 
 def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
-    (6) 技能类型 (8 维) - One-Hot 编码
+    (6) 技能类型 (16 维) - One-Hot 编码
     
     含义: 指示当前正在执行的技能/招式类型
-    格式: [直拳Jab, 交叉拳Cross, 摆拳Hook, 上勾拳Uppercut, 
-           低扫腿LowKick, 中段踢MidKick, 预留1, 预留2]
     
-    为什么是8维?
-    - 当前只定义了4-6种技能
-    - 预留额外维度给未来可能的技能 (前踢FrontKick, 侧踢SideKick 等)
+    为什么是16维?
+    - 预留足够的维度给未来可能的所有技能
     - 避免后续修改网络架构
+    - 支持拳法、腿法、组合技等多种类型
     
-    Stage 1: 硬编码为 "直拳Jab" (索引0) = [1, 0, 0, 0, 0, 0, 0, 0]
+    Stage 1: 硬编码为 "直拳Jab" (索引0)
     
     Stage 2 TODO:
     - 根据当前技能命令或动作类型动态设置
     - 从动作文件名解析 (例如: "cross_right_normal" -> Cross)
     
     Returns:
-        Tensor (num_envs, 8): One-Hot 编码的技能类型
+        Tensor (num_envs, 16): One-Hot 编码的技能类型
     """
-    # 技能索引对照表:
+    # 技能索引对照表 (16 维):
+    # ===== 拳法 (0-5) =====
     # 0: Jab (直拳)
     # 1: Cross (交叉拳)
     # 2: Hook (摆拳)
     # 3: Uppercut (上勾拳)
-    # 4: LowKick (低扫腿)
-    # 5: MidKick (中段踢)
-    # 6: 预留 (例如 FrontKick 前踢)
-    # 7: 预留 (例如 SideKick 侧踢)
+    # 4: Backfist (反拳)
+    # 5: Overhand (砸拳)
+    # ===== 腿法 (6-11) =====
+    # 6: LowKick (低扫腿)
+    # 7: MidKick (中段踢)
+    # 8: HighKick (高踢)
+    # 9: FrontKick (前踢)
+    # 10: SideKick (侧踢)
+    # 11: RoundhouseKick (回旋踢)
+    # ===== 组合/特殊 (12-15) =====
+    # 12: Combo1 (组合1)
+    # 13: Combo2 (组合2)
+    # 14: 预留
+    # 15: 预留
     
-    one_hot = torch.zeros(env.num_envs, 8, device=env.device)
+    one_hot = torch.zeros(env.num_envs, 16, device=env.device)
     one_hot[:, 0] = 1.0  # 默认: 直拳 (Stage 1)
     
     # Stage 2 TODO: 从以下来源解析技能类型:
