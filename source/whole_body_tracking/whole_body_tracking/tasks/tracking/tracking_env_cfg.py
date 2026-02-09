@@ -124,15 +124,15 @@ class ObservationsCfg:
             - joint_vel: 29 维
             - actions: 29 维
         
-        新增任务导向观测 (20 维):
+        新增任务导向观测 (28 维):
             - target_rel_pos: 3 维 (目标相对位置)
             - target_rel_vel: 3 维 (目标相对速度)
             - strikes_left: 1 维 (剩余攻击次数)
             - time_left: 1 维 (剩余时间)
             - active_effector: 4 维 (活跃肢体 one-hot)
-            - skill_type: 8 维 (技能类型 one-hot)
+            - skill_type: 16 维 (技能类型 one-hot)
         
-        总计: 160 + 20 = 180 维
+        总计: 160 + 28 = 188 维
         """
 
         # =====================================================================
@@ -192,8 +192,11 @@ class ObservationsCfg:
             params={"command_name": "motion"}
         )
         
-        # (6) 技能类型 one-hot: 8 维 [直拳, 交叉拳, 摆拳, 上勾拳, 低扫腿, 中段踢, 预留, 预留]
-        # Stage 1: 硬编码为直拳 [1, 0, 0, 0, 0, 0, 0, 0]
+        # (6) 技能类型 one-hot: 16 维
+        # 格式: [Jab, Cross, Hook, Uppercut, Backfist, Overhand,
+        #        LowKick, MidKick, HighKick, FrontKick, SideKick, RoundhouseKick,
+        #        Combo1, Combo2, 预留, 预留]
+        # Stage 1: 硬编码为直拳
         skill_type = ObsTerm(
             func=mdp.skill_type_one_hot,
             params={"command_name": "motion"}
@@ -210,10 +213,10 @@ class ObservationsCfg:
         原始 Mimic 观测 (286 维):
             - 与 Policy 相同 + body_pos (42 维) + body_ori (84 维)
         
-        新增任务导向观测 (20 维):
+        新增任务导向观测 (28 维):
             - 与 Policy 相同
         
-        总计: 286 + 20 = 306 维
+        总计: 286 + 28 = 314 维
         """
         
         # =====================================================================
@@ -265,7 +268,7 @@ class ObservationsCfg:
             params={"command_name": "motion"}
         )
         
-        # (6) 技能类型 one-hot: 8 维
+        # (6) 技能类型 one-hot: 16 维
         skill_type = ObsTerm(
             func=mdp.skill_type_one_hot,
             params={"command_name": "motion"}
@@ -356,6 +359,22 @@ class RewardsCfg:
         params={"command_name": "motion", "std": 3.14},
     )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
+    
+    # =========================================================================
+    # 新增: 攻击肢体靠近目标位置的奖励 (Stage 1 辅助)
+    # 权重设置较小 (0.2)，不影响 mimic 主导地位
+    # Stage 2 时可以增大权重
+    # =========================================================================
+    effector_target = RewTerm(
+        func=mdp.effector_target_tracking_exp,
+        weight=0.1,
+        params={
+            "command_name": "motion",
+            "std": 0.15,  # 较小的 std 让奖励对距离更敏感
+            "effector_body_name": "right_wrist_yaw_link",
+        },
+    )
+    
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
