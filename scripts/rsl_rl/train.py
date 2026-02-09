@@ -43,6 +43,15 @@ sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# ================= 修复 ModuleNotFoundError: No module named 'isaacsim.asset' =================
+# 必须在 app 启动后，import 其他 Isaac Lab 模块之前手动加载
+from isaacsim.core.utils.extensions import enable_extension
+try:
+    enable_extension("isaacsim.asset.importer.urdf")
+except Exception:
+    enable_extension("omni.isaac.urdf_importer")
+# ===========================================================================================
+
 """Rest everything follows."""
 
 import gymnasium as gym
@@ -58,7 +67,8 @@ from isaaclab.envs import (
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_pickle, dump_yaml
+# from isaaclab.utils.io import dump_pickle, dump_yaml
+# from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
@@ -72,6 +82,20 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
+# 修复importError: cannot import name 'dump_pickle' from 'isaaclab.utils.io'
+import pickle
+import yaml
+import os
+def dump_pickle(filename, data):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, 'wb') as f:
+        pickle.dump(data, f)
+
+def dump_yaml(filename, data):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, 'w') as f:
+        yaml.dump(data, f, sort_keys=False)
+# === 修复结束 ===
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
