@@ -112,9 +112,32 @@ class ObservationsCfg:
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Observations for policy group."""
+        """Actor 策略网络的观测配置
+        
+        原始 Mimic 观测 (160 维):
+            - command: 58 维 (关节位置 + 关节速度)
+            - motion_anchor_pos_b: 3 维
+            - motion_anchor_ori_b: 6 维
+            - base_lin_vel: 3 维
+            - base_ang_vel: 3 维
+            - joint_pos: 29 维
+            - joint_vel: 29 维
+            - actions: 29 维
+        
+        新增任务导向观测 (20 维):
+            - target_rel_pos: 3 维 (目标相对位置)
+            - target_rel_vel: 3 维 (目标相对速度)
+            - strikes_left: 1 维 (剩余攻击次数)
+            - time_left: 1 维 (剩余时间)
+            - active_effector: 4 维 (活跃肢体 one-hot)
+            - skill_type: 8 维 (技能类型 one-hot)
+        
+        总计: 160 + 20 = 180 维
+        """
 
-        # observation terms (order preserved)
+        # =====================================================================
+        # 原始 Mimic 观测 (请勿修改)
+        # =====================================================================
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         motion_anchor_pos_b = ObsTerm(
             func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
@@ -128,12 +151,74 @@ class ObservationsCfg:
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
         actions = ObsTerm(func=mdp.last_action)
 
+        # =====================================================================
+        # 新增任务导向观测 (Stage 1: Mimic 训练)
+        # 使用 dummy/关联数据，为 Stage 2 任务导向 RL 做准备
+        # =====================================================================
+        
+        # (1) 目标相对位置: 3 维
+        # Stage 1: 使用参考动作中攻击肢体的位置作为 dummy target
+        target_rel_pos = ObsTerm(
+            func=mdp.target_relative_position,
+            params={"command_name": "motion", "effector_body_name": "right_wrist_yaw_link"},
+            noise=Unoise(n_min=-0.1, n_max=0.1)
+        )
+        
+        # (2) 目标相对速度: 3 维
+        # Stage 1: 设为零 (目标静止)
+        target_rel_vel = ObsTerm(
+            func=mdp.target_relative_velocity,
+            params={"command_name": "motion"}
+        )
+        
+        # (3) 剩余攻击次数: 1 维
+        # Stage 1: 设为常数 1.0
+        strikes_left = ObsTerm(
+            func=mdp.strikes_left,
+            params={"command_name": "motion"}
+        )
+        
+        # (4) 剩余时间: 1 维
+        # Stage 1: 设为常数 1.0
+        time_left = ObsTerm(
+            func=mdp.time_left,
+            params={"command_name": "motion"}
+        )
+        
+        # (5) 活跃攻击肢体 one-hot: 4 维 [左手, 右手, 左脚, 右脚]
+        # Stage 1: 硬编码为右手 [0, 1, 0, 0]
+        active_effector = ObsTerm(
+            func=mdp.active_effector_one_hot,
+            params={"command_name": "motion"}
+        )
+        
+        # (6) 技能类型 one-hot: 8 维 [直拳, 交叉拳, 摆拳, 上勾拳, 低扫腿, 中段踢, 预留, 预留]
+        # Stage 1: 硬编码为直拳 [1, 0, 0, 0, 0, 0, 0, 0]
+        skill_type = ObsTerm(
+            func=mdp.skill_type_one_hot,
+            params={"command_name": "motion"}
+        )
+
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
 
     @configclass
     class PrivilegedCfg(ObsGroup):
+        """Critic 价值网络的特权观测配置
+        
+        原始 Mimic 观测 (286 维):
+            - 与 Policy 相同 + body_pos (42 维) + body_ori (84 维)
+        
+        新增任务导向观测 (20 维):
+            - 与 Policy 相同
+        
+        总计: 286 + 20 = 306 维
+        """
+        
+        # =====================================================================
+        # 原始 Mimic 观测 (请勿修改)
+        # =====================================================================
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         motion_anchor_pos_b = ObsTerm(func=mdp.motion_anchor_pos_b, params={"command_name": "motion"})
         motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"})
@@ -144,6 +229,47 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
+        
+        # =====================================================================
+        # 新增任务导向观测 (Stage 1: Mimic 训练)
+        # Critic 也需要这些观测来准确估计价值函数
+        # =====================================================================
+        
+        # (1) 目标相对位置: 3 维
+        target_rel_pos = ObsTerm(
+            func=mdp.target_relative_position,
+            params={"command_name": "motion", "effector_body_name": "right_wrist_yaw_link"}
+        )
+        
+        # (2) 目标相对速度: 3 维
+        target_rel_vel = ObsTerm(
+            func=mdp.target_relative_velocity,
+            params={"command_name": "motion"}
+        )
+        
+        # (3) 剩余攻击次数: 1 维
+        strikes_left = ObsTerm(
+            func=mdp.strikes_left,
+            params={"command_name": "motion"}
+        )
+        
+        # (4) 剩余时间: 1 维
+        time_left = ObsTerm(
+            func=mdp.time_left,
+            params={"command_name": "motion"}
+        )
+        
+        # (5) 活跃攻击肢体 one-hot: 4 维
+        active_effector = ObsTerm(
+            func=mdp.active_effector_one_hot,
+            params={"command_name": "motion"}
+        )
+        
+        # (6) 技能类型 one-hot: 8 维
+        skill_type = ObsTerm(
+            func=mdp.skill_type_one_hot,
+            params={"command_name": "motion"}
+        )
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
