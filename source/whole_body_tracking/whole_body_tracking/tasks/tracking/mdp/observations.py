@@ -227,7 +227,7 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
     # Stage 1: 假设所有攻击都是右手出拳
     # 格式: [左手, 右手, 左脚, 右脚]
     one_hot = torch.zeros(env.num_envs, 4, device=env.device)
-    one_hot[:, 1] = 1.0  # 右手激活
+    one_hot[:, 3] = 1.0  # 左手0，右手1，左脚2，右脚3
     
     # Stage 2 TODO: 根据以下信息动态确定活跃肢体:
     #   - 动作文件名 (例如: "cross" -> 右手, "hook_left" -> 左手)
@@ -259,11 +259,12 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
     # 技能索引对照表 (16 维):
     # ===== 拳法 (0-5) =====
-    # 0: Jab (直拳)
-    # 1: Cross (交叉拳)
-    # 2: Hook (摆拳)
-    # 3: Uppercut (上勾拳)
-    # 4: Backfist (反拳)
+    # 0: r-Cross (右直拳)
+    # 1: r-swing (右摆拳)
+    # 2: roundhouse_right_normal_low (右-低位鞭腿)
+    # 3: roundhouse_right_fast_high (右-高位鞭腿)
+    # 4: frontkick_right_normal_body (右脚前蹬)
+
     # 5: Overhand (砸拳)
     # ===== 腿法 (6-11) =====
     # 6: LowKick (低扫腿)
@@ -279,7 +280,8 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     # 15: 预留
     
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
-    one_hot[:, 0] = 1.0  # 默认: 直拳 (Stage 1)
+    # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4
+    one_hot[:, 4] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
     
     # Stage 2 TODO: 从以下来源解析技能类型:
     #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
