@@ -5,7 +5,7 @@ import numpy as np
 import os
 import torch
 from collections.abc import Sequence
-from dataclasses import MISSING
+from dataclasses import MISSING, field
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation
@@ -22,9 +22,28 @@ from isaaclab.utils.math import (
     sample_uniform,
     yaw_quat,
 )
+import isaaclab.sim as sim_utils
+
+# Debug draw 用于绘制线框
+try:
+    import isaacsim.util.debug_draw._debug_draw as omni_debug_draw
+    HAS_DEBUG_DRAW = True
+except ImportError:
+    HAS_DEBUG_DRAW = False
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+# =============================================================================
+# 目标小球采样区域配置 (相对于机器人 Root/Pelvis 的局部坐标系)
+# 基于 Unitree G1 机器人的尺寸设计，适合拳击攻击动作
+# =============================================================================
+DEFAULT_TARGET_SAMPLING_RANGE = {
+    "x": (0.6, 0.65),   # 前方 50-60cm，有效攻击距离
+    "y": (-0.4, 0.4),    # 左右 ±40cm，覆盖左右出拳
+    "z": (0.25, 0.5),    # 高度 25-50cm（胸部到下巴高度）
+}
 
 
 class MotionLoader:
@@ -96,6 +115,75 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
+
+        # =====================================================================
+        # Stage 2: 目标小球 (Target Sphere) 初始化
+        # 用于 Task-Oriented RL 的击打目标
+        # =====================================================================
+        
+        # 目标小球的世界坐标位置 (num_envs, 3)
+        self.target_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        
+        # 获取参考动作第一帧的 Root (Pelvis) 位置和朝向
+        # 这是采样区域的基准位置，在整个 episode 中保持不变
+        self._reference_root_pos_w = self.motion.body_pos_w[0, 0].clone()  # (3,) 第一帧的 pelvis 位置
+        self._reference_root_quat_w = self.motion.body_quat_w[0, 0].clone()  # (4,) 第一帧的 pelvis 朝向
+        
+        # 采样范围配置 (相对于机器人 Root 的局部坐标)
+        self._target_sampling_range = self.cfg.target_sampling_range
+        
+        # 引导大球半径 (固定值)
+        self._guidance_sphere_radius = self.cfg.guidance_sphere_radius
+        
+        # 初始化目标位置（会在 reset 时被重新采样）
+        self._init_target_positions()
+
+    def _init_target_positions(self):
+        """初始化所有环境的目标位置"""
+        # 在采样范围内随机采样目标位置
+        self._resample_target_positions(torch.arange(self.num_envs, device=self.device))
+    
+    def _resample_target_positions(self, env_ids: torch.Tensor):
+        """
+        为指定环境重新采样目标位置
+        
+        采样逻辑:
+        1. 在局部坐标系 (相对于参考动作第一帧的 Root) 中采样
+        2. 将局部坐标转换到世界坐标系
+        3. 加上各环境的 origin 偏移
+        
+        Args:
+            env_ids: 需要重新采样的环境索引
+        """
+        if len(env_ids) == 0:
+            return
+        
+        num_samples = len(env_ids)
+        
+        # 在局部坐标系中采样目标位置
+        x_range = self._target_sampling_range["x"]
+        y_range = self._target_sampling_range["y"]
+        z_range = self._target_sampling_range["z"]
+        
+        # 随机采样 (num_samples, 3)
+        local_target_pos = torch.zeros(num_samples, 3, device=self.device)
+        local_target_pos[:, 0] = sample_uniform(x_range[0], x_range[1], (num_samples,), device=self.device)
+        local_target_pos[:, 1] = sample_uniform(y_range[0], y_range[1], (num_samples,), device=self.device)
+        local_target_pos[:, 2] = sample_uniform(z_range[0], z_range[1], (num_samples,), device=self.device)
+        
+        # 将局部坐标转换到世界坐标系
+        # 使用参考动作第一帧的 Root 朝向进行旋转
+        # world_pos = root_pos + quat_apply(root_quat, local_pos)
+        world_target_pos = self._reference_root_pos_w + quat_apply(
+            self._reference_root_quat_w.unsqueeze(0).repeat(num_samples, 1),
+            local_target_pos
+        )
+        
+        # 加上各环境的 origin 偏移
+        world_target_pos = world_target_pos + self._env.scene.env_origins[env_ids]
+        
+        # 更新目标位置
+        self.target_pos_w[env_ids] = world_target_pos
 
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation
@@ -244,6 +332,9 @@ class MotionCommand(CommandTerm):
         if len(env_ids) == 0:
             return
         self._adaptive_sampling(env_ids)
+        
+        # Stage 2: 重新采样目标位置
+        self._resample_target_positions(torch.tensor(env_ids, device=self.device))
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -321,12 +412,26 @@ class MotionCommand(CommandTerm):
                             self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/goal/" + name)
                         )
                     )
+                
+                # =========================================================
+                # Stage 2: 目标小球 Marker 初始化
+                # =========================================================
+                self.target_sphere_visualizer = VisualizationMarkers(
+                    self.cfg.target_sphere_cfg.replace(prim_path="/Visuals/Command/target_sphere")
+                )
 
             self.current_anchor_visualizer.set_visibility(True)
             self.goal_anchor_visualizer.set_visibility(True)
             for i in range(len(self.cfg.body_names)):
                 self.current_body_visualizers[i].set_visibility(True)
                 self.goal_body_visualizers[i].set_visibility(True)
+            
+            # Stage 2: 显示目标小球
+            self.target_sphere_visualizer.set_visibility(True)
+            
+            # 获取 debug draw 接口
+            if HAS_DEBUG_DRAW:
+                self._debug_draw = omni_debug_draw.acquire_debug_draw_interface()
 
         else:
             if hasattr(self, "current_anchor_visualizer"):
@@ -335,6 +440,14 @@ class MotionCommand(CommandTerm):
                 for i in range(len(self.cfg.body_names)):
                     self.current_body_visualizers[i].set_visibility(False)
                     self.goal_body_visualizers[i].set_visibility(False)
+            
+            # Stage 2: 隐藏目标小球
+            if hasattr(self, "target_sphere_visualizer"):
+                self.target_sphere_visualizer.set_visibility(False)
+            
+            # 清除 debug lines
+            if HAS_DEBUG_DRAW and hasattr(self, "_debug_draw"):
+                self._debug_draw.clear_lines()
 
     def _debug_vis_callback(self, event):
         if not self.robot.is_initialized:
@@ -346,6 +459,176 @@ class MotionCommand(CommandTerm):
         for i in range(len(self.cfg.body_names)):
             self.current_body_visualizers[i].visualize(self.robot_body_pos_w[:, i], self.robot_body_quat_w[:, i])
             self.goal_body_visualizers[i].visualize(self.body_pos_relative_w[:, i], self.body_quat_relative_w[:, i])
+        
+        # =====================================================================
+        # Stage 2: 绘制目标小球、引导大球线框、采样区域边界
+        # =====================================================================
+        
+        # 1. 绘制目标小球 (红色实心球)
+        self.target_sphere_visualizer.visualize(self.target_pos_w)
+        
+        # 2. 绘制引导大球线框和采样区域边界 (使用 debug lines)
+        if HAS_DEBUG_DRAW and hasattr(self, "_debug_draw"):
+            self._debug_draw.clear_lines()
+            self._draw_guidance_spheres()
+            self._draw_sampling_regions()
+    
+    def _draw_guidance_spheres(self):
+        """
+        绘制引导大球的线框 (浅绿色)
+        
+        为每个环境的目标小球绘制 3 个正交圆环 (XY, YZ, XZ 平面)
+        来模拟一个线框球体
+        """
+        radius = self._guidance_sphere_radius
+        num_segments = 32  # 每个圆环的线段数
+        color = [0.5, 1.0, 0.5, 0.8]  # 浅绿色 RGBA
+        thickness = 2.0
+        
+        source_positions = []
+        target_positions = []
+        colors = []
+        thicknesses = []
+        
+        for env_idx in range(self.num_envs):
+            center = self.target_pos_w[env_idx].cpu().numpy()
+            
+            # 绘制 XY 平面圆环 (水平)
+            self._add_circle_lines(
+                center, radius, "xy", num_segments,
+                source_positions, target_positions, colors, thicknesses,
+                color, thickness
+            )
+            
+            # 绘制 YZ 平面圆环 (前后垂直)
+            self._add_circle_lines(
+                center, radius, "yz", num_segments,
+                source_positions, target_positions, colors, thicknesses,
+                color, thickness
+            )
+            
+            # 绘制 XZ 平面圆环 (左右垂直)
+            self._add_circle_lines(
+                center, radius, "xz", num_segments,
+                source_positions, target_positions, colors, thicknesses,
+                color, thickness
+            )
+        
+        if source_positions:
+            self._debug_draw.draw_lines(source_positions, target_positions, colors, thicknesses)
+    
+    def _draw_sampling_regions(self):
+        """
+        绘制采样区域边界 (蓝色长方体线框)
+        
+        为每个环境绘制一个长方体的 12 条边
+        """
+        color = [0.3, 0.5, 1.0, 0.8]  # 蓝色 RGBA
+        thickness = 2.0
+        
+        x_range = self._target_sampling_range["x"]
+        y_range = self._target_sampling_range["y"]
+        z_range = self._target_sampling_range["z"]
+        
+        source_positions = []
+        target_positions = []
+        colors = []
+        thicknesses = []
+        
+        for env_idx in range(self.num_envs):
+            # 获取该环境的基准位置 (参考动作第一帧 Root 位置 + env origin)
+            base_pos = self._reference_root_pos_w.cpu().numpy() + self._env.scene.env_origins[env_idx].cpu().numpy()
+            base_quat = self._reference_root_quat_w.cpu().numpy()
+            
+            # 计算长方体的 8 个顶点 (在局部坐标系)
+            corners_local = [
+                [x_range[0], y_range[0], z_range[0]],  # 0: 左下后
+                [x_range[1], y_range[0], z_range[0]],  # 1: 右下后
+                [x_range[1], y_range[1], z_range[0]],  # 2: 右上后
+                [x_range[0], y_range[1], z_range[0]],  # 3: 左上后
+                [x_range[0], y_range[0], z_range[1]],  # 4: 左下前
+                [x_range[1], y_range[0], z_range[1]],  # 5: 右下前
+                [x_range[1], y_range[1], z_range[1]],  # 6: 右上前
+                [x_range[0], y_range[1], z_range[1]],  # 7: 左上前
+            ]
+            
+            # 将局部坐标转换到世界坐标
+            corners_world = []
+            for corner in corners_local:
+                # 使用四元数旋转
+                corner_tensor = torch.tensor(corner, dtype=torch.float32, device=self.device)
+                rotated = quat_apply(
+                    self._reference_root_quat_w.unsqueeze(0),
+                    corner_tensor.unsqueeze(0)
+                ).squeeze(0).cpu().numpy()
+                world_corner = base_pos + rotated
+                corners_world.append(world_corner.tolist())
+            
+            # 长方体的 12 条边
+            edges = [
+                # 底面 4 条边
+                (0, 1), (1, 2), (2, 3), (3, 0),
+                # 顶面 4 条边
+                (4, 5), (5, 6), (6, 7), (7, 4),
+                # 连接上下的 4 条边
+                (0, 4), (1, 5), (2, 6), (3, 7),
+            ]
+            
+            for start_idx, end_idx in edges:
+                source_positions.append(corners_world[start_idx])
+                target_positions.append(corners_world[end_idx])
+                colors.append(color)
+                thicknesses.append(thickness)
+        
+        if source_positions:
+            self._debug_draw.draw_lines(source_positions, target_positions, colors, thicknesses)
+    
+    def _add_circle_lines(
+        self, center, radius, plane, num_segments,
+        source_positions, target_positions, colors, thicknesses,
+        color, thickness
+    ):
+        """
+        在指定平面上添加圆环的线段
+        
+        Args:
+            center: 圆心位置 (3,)
+            radius: 圆的半径
+            plane: "xy", "yz", 或 "xz"
+            num_segments: 线段数量
+        """
+        for i in range(num_segments):
+            angle1 = 2 * math.pi * i / num_segments
+            angle2 = 2 * math.pi * (i + 1) / num_segments
+            
+            if plane == "xy":
+                p1 = [center[0] + radius * math.cos(angle1),
+                      center[1] + radius * math.sin(angle1),
+                      center[2]]
+                p2 = [center[0] + radius * math.cos(angle2),
+                      center[1] + radius * math.sin(angle2),
+                      center[2]]
+            elif plane == "yz":
+                p1 = [center[0],
+                      center[1] + radius * math.cos(angle1),
+                      center[2] + radius * math.sin(angle1)]
+                p2 = [center[0],
+                      center[1] + radius * math.cos(angle2),
+                      center[2] + radius * math.sin(angle2)]
+            elif plane == "xz":
+                p1 = [center[0] + radius * math.cos(angle1),
+                      center[1],
+                      center[2] + radius * math.sin(angle1)]
+                p2 = [center[0] + radius * math.cos(angle2),
+                      center[1],
+                      center[2] + radius * math.sin(angle2)]
+            else:
+                continue
+            
+            source_positions.append(p1)
+            target_positions.append(p2)
+            colors.append(color)
+            thicknesses.append(thickness)
 
 
 @configclass
@@ -375,3 +658,30 @@ class MotionCommandCfg(CommandTermCfg):
 
     body_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")
     body_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+
+    # =========================================================================
+    # Stage 2: 目标小球配置 (Task-Oriented RL)
+    # =========================================================================
+    
+    # 目标小球采样范围 (相对于机器人 Root/Pelvis 的局部坐标系)
+    # 基于 Unitree G1 机器人的尺寸设计，适合拳击攻击动作
+    target_sampling_range: dict[str, tuple[float, float]] = field(
+        default_factory=lambda: DEFAULT_TARGET_SAMPLING_RANGE.copy()
+    )
+    
+    # 引导大球半径 (固定值，用于可视化奖励生效范围)
+    guidance_sphere_radius: float = 0.25
+    
+    # 目标小球 Marker 配置 (红色实心球)
+    target_sphere_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/Command/target_sphere",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.06,  # 半径 6cm
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(1.0, 0.2, 0.2),  # 红色
+                    opacity=0.9,
+                ),
+            ),
+        },
+    )
