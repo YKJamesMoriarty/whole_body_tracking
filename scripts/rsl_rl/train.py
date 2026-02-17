@@ -25,6 +25,9 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, required=True, help="The name of the wand registry.")
+# Stage 2: 支持从 WandB 加载 checkpoint 继续训练
+parser.add_argument("--wandb_checkpoint_path", type=str, default=None, 
+                    help="WandB run path to load checkpoint from (e.g., 'org/project/run_id' or 'org/project/run_id/model_10000.pt')")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -170,8 +173,51 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
-    # save resume path before creating a new log_dir
-    if agent_cfg.resume:
+    
+    # =========================================================================
+    # Stage 2: 支持从 WandB 或本地加载 checkpoint 继续训练
+    # =========================================================================
+    
+    # 方式 1: 从 WandB 下载 checkpoint (优先级最高)
+    if args_cli.wandb_checkpoint_path:
+        import wandb as wandb_api
+        
+        run_path = args_cli.wandb_checkpoint_path
+        api = wandb_api.Api()
+        
+        # 检查是否指定了具体的 model 文件
+        if "model" in args_cli.wandb_checkpoint_path:
+            run_path = "/".join(args_cli.wandb_checkpoint_path.split("/")[:-1])
+            specified_file = args_cli.wandb_checkpoint_path.split("/")[-1]
+        else:
+            specified_file = None
+        
+        wandb_run = api.run(run_path)
+        
+        # 获取所有 model 文件
+        files = [file.name for file in wandb_run.files() if "model" in file.name]
+        
+        if specified_file:
+            file = specified_file
+        else:
+            # 找最新的 model 文件 (model_xxx.pt 中 xxx 最大的)
+            file = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))
+        
+        # 下载到临时目录
+        wandb_file = wandb_run.file(str(file))
+        wandb_download_dir = "./logs/rsl_rl/wandb_checkpoints"
+        wandb_file.download(wandb_download_dir, replace=True)
+        
+        resume_path = os.path.join(wandb_download_dir, file)
+        print(f"[INFO]: Loading model checkpoint from WandB: {run_path}/{file}")
+        print(f"[INFO]: Downloaded to: {resume_path}")
+        
+        # 加载 checkpoint
+        runner.load(resume_path)
+        print(f"[INFO]: Successfully loaded Stage 1 checkpoint, continuing Stage 2 training...")
+    
+    # 方式 2: 从本地 logs 文件夹恢复 (原有逻辑)
+    elif agent_cfg.resume:
         # get path to previous checkpoint
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")

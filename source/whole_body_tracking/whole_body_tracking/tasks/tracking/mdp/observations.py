@@ -84,13 +84,12 @@ def motion_anchor_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor
 
 
 # =============================================================================
-# 拳击机器人任务导向观测 (Stage 1: Mimic 模仿训练)
-# 这些观测是为 Stage 2: Task-Oriented RL (击打目标点) 做准备
-# 在 Stage 1 中，我们使用"假的但有关联的数据"，让网络学习有意义的表征
+# 拳击机器人任务导向观测 (Stage 2: Task-Oriented RL)
+# 这些观测为击打目标点任务提供必要信息
 # =============================================================================
 
 
-def target_relative_position(env: ManagerBasedEnv, command_name: str, effector_body_name: str = "right_wrist_yaw_link") -> torch.Tensor:
+def target_relative_position(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
     (1) 目标相对位置 (3 维): [x, y, z]
     
@@ -102,35 +101,23 @@ def target_relative_position(env: ManagerBasedEnv, command_name: str, effector_b
     - Y轴: 机器人左侧
     - Z轴: 机器人上方
     
-    Stage 1 技巧:
-    - target = 参考动作中该肢体应该到达的位置
-    - 使用 body_pos_relative_w（已对齐到机器人当前位置）
-    
-    Stage 2 TODO:
-    - 将 target_pos_w 替换为场景中实际的目标点
-    
-    注意：观测和奖励函数都使用相同的 target 来源 (body_pos_relative_w)
+    Stage 2:
+    - target = 课程学习随机采样的目标点 (command.target_pos_w)
+    - 与 Hit 检测和可视化使用相同的数据源
     
     Args:
         env: 环境实例
         command_name: 动作命令名称
-        effector_body_name: 攻击肢体名称
     
     Returns:
         Tensor (num_envs, 3): 目标在机器人局部坐标系中的位置 [x_前后, y_左右, z_上下]
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     
-    # 获取攻击肢体的索引
-    try:
-        effector_index = command.cfg.body_names.index(effector_body_name)
-    except ValueError:
-        effector_index = -1
-    
-    # Stage 1: 目标位置 = 参考动作中该肢体的位置（已对齐到机器人当前位置）
-    # body_pos_relative_w: 把参考动作"移动"到机器人当前站立的位置
-    # 这和奖励函数 effector_target_tracking_exp 使用的是**同一个数据源**
-    target_pos_w = command.body_pos_relative_w[:, effector_index]  # (num_envs, 3) 世界坐标
+    # Stage 2: 使用随机采样的目标位置
+    # target_pos_w 是在 commands.py 中根据课程学习动态采样的目标点
+    # 这个目标点也会用于可视化 (红色目标球) 和 Hit 检测
+    target_pos_w = command.target_pos_w  # (num_envs, 3) 世界坐标
     
     # 获取机器人 Root (Pelvis) 的世界坐标位置和朝向
     robot_root_pos_w = command.robot_anchor_pos_w   # (num_envs, 3)

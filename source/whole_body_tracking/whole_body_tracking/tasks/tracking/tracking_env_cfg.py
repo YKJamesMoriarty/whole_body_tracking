@@ -152,15 +152,15 @@ class ObservationsCfg:
         actions = ObsTerm(func=mdp.last_action)
 
         # =====================================================================
-        # 新增任务导向观测 (Stage 1: Mimic 训练)
-        # 使用 dummy/关联数据，为 Stage 2 任务导向 RL 做准备
+        # Stage 2 任务导向观测
+        # 使用课程学习动态采样的目标位置
         # =====================================================================
         
         # (1) 目标相对位置: 3 维
-        # Stage 1: 使用参考动作中攻击肢体的位置作为 dummy target
+        # Stage 2: 使用 command.target_pos_w (课程学习采样的目标)
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
-            params={"command_name": "motion", "effector_body_name": "right_wrist_yaw_link"},
+            params={"command_name": "motion"},
             noise=Unoise(n_min=-0.1, n_max=0.1)
         )
         
@@ -234,14 +234,14 @@ class ObservationsCfg:
         actions = ObsTerm(func=mdp.last_action)
         
         # =====================================================================
-        # 新增任务导向观测 (Stage 1: Mimic 训练)
+        # Stage 2 任务导向观测
         # Critic 也需要这些观测来准确估计价值函数
         # =====================================================================
         
         # (1) 目标相对位置: 3 维
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
-            params={"command_name": "motion", "effector_body_name": "right_wrist_yaw_link"}
+            params={"command_name": "motion"}
         )
         
         # (2) 目标相对速度: 3 维
@@ -326,54 +326,123 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for the MDP."""
+    """Reward terms for the MDP.
+    
+    Stage 2: Task-Oriented RL 奖励配置
+    ===================================
+    
+    奖励设计原则:
+    1. 核心任务奖励 (effector_target_hit) 权重最高，明确训练目标
+    2. 引导奖励 (effector_target_near) 解决稀疏奖励探索问题
+    3. Mimic 奖励权重降低但保留，维持动作质量
+    4. 反蹭分惩罚防止策略利用漏洞
+    5. 姿态惩罚保证物理稳定性
+    """
+    
+    # =========================================================================
+    # Stage 2 核心任务奖励
+    # =========================================================================
+    
+    # [核心] 有效击中目标 - 最重要的奖励信号
+    effector_target_hit = RewTerm(
+        func=mdp.effector_target_hit,
+        weight=20.0,
+        params={"command_name": "motion"},
+    )
+    
+    # [引导] 手靠近目标 - 解决稀疏奖励探索问题
+    effector_target_near = RewTerm(
+        func=mdp.effector_target_near,
+        weight=2.0,
+        params={
+            "command_name": "motion",
+            "guidance_radius": 0.25,  # 引导球半径
+        },
+    )
+    
+    # [战术] 躯干朝向目标 - 鼓励正确的攻击姿态
+    effector_face_target = RewTerm(
+        func=mdp.effector_face_target,
+        weight=0.5,
+        params={"command_name": "motion"},
+    )
+    
+    # [速度] 击中时的速度奖励 - 鼓励有力的打击
+    effector_hit_speed_bonus = RewTerm(
+        func=mdp.effector_target_hit_velocity_bonus,
+        weight=1.0,
+        params={
+            "command_name": "motion",
+            "speed_threshold": 0.5,
+        },
+    )
+    
+    # =========================================================================
+    # Stage 2 惩罚项
+    # =========================================================================
+    
+    # [反蹭分] 惩罚手在目标附近但不移动
+    pen_touch_lazy = RewTerm(
+        func=mdp.pen_touch_lazy,
+        weight=3.0,  # 权重为正，函数返回负值
+        params={"command_name": "motion"},
+    )
+    
+    # [姿态] 惩罚身体过度倾斜
+    posture_unstable = RewTerm(
+        func=mdp.posture_unstable,
+        weight=1.0,  # 权重为正，函数返回负值
+        params={
+            "command_name": "motion",
+            "tilt_threshold": 0.5,  # 约30度
+        },
+    )
+    
+    # =========================================================================
+    # Stage 2 调整后的 Mimic 奖励 (保留小权重，维持动作质量)
+    # 原来stage1中以下6个奖励的权重分别为0.5，0.5，1，1，1，1
+    # 设计原因:
+    # - 保留 0.1 的小权重而不是完全设为 0
+    # - 防止长时间 Stage 2 训练后出现多余的移动或奇怪姿态
+    # - cross 数据是原地出拳，不需要大幅移动，所以保留位置约束有意义
+    # =========================================================================
 
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=0.5,
+        weight=0.4,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
         params={"command_name": "motion", "std": 0.3},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.5,
+        weight=0.4,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,
+        weight=0.85,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.0,
+        weight=0.9,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=1.0,
+        weight=0.5,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=1.0,
+        weight=0.5,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     
     # =========================================================================
-    # 新增: 攻击肢体靠近目标位置的奖励 (Stage 1 辅助)
-    # 权重设置较小 (0.2)，不影响 mimic 主导地位
-    # Stage 2 时可以增大权重
+    # 保持不变的正则化惩罚
     # =========================================================================
-    effector_target = RewTerm(
-        func=mdp.effector_target_tracking_exp,
-        weight=0.1,
-        params={
-            "command_name": "motion",
-            "std": 0.15,  # 较小的 std 让奖励对距离更敏感
-            "effector_body_name": "right_wrist_yaw_link",
-        },
-    )
+    
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
@@ -397,30 +466,39 @@ class RewardsCfg:
 
 @configclass
 class TerminationsCfg:
-    """Termination terms for the MDP."""
+    """Termination terms for the MDP.
+    
+    Stage 2 设计说明:
+    ================
+    Stage 1 (Mimic) 的终止条件基于参考动作的跟踪误差:
+    - anchor_pos: 锚点位置偏差过大
+    - anchor_ori: 锚点朝向偏差过大  
+    - ee_body_pos: 四肢位置偏差过大
+    
+    Stage 2 (Task-Oriented) 不再强约束跟踪参考动作:
+    - 删除上述 mimic 相关的终止条件
+    - 添加物理稳定性检测 (摔倒检测)
+    - 保留 time_out 防止无限循环
+    """
 
+    # 正常超时终止 - 保留
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    anchor_pos = DoneTerm(
-        func=mdp.bad_anchor_pos_z_only,
-        params={"command_name": "motion", "threshold": 0.25},
-    )
-    anchor_ori = DoneTerm(
-        func=mdp.bad_anchor_ori,
-        params={"asset_cfg": SceneEntityCfg("robot"), "command_name": "motion", "threshold": 0.8},
-    )
-    ee_body_pos = DoneTerm(
-        func=mdp.bad_motion_body_pos_z_only,
+    
+    # Stage 2: 摔倒检测 - 替代 mimic 相关的终止条件
+    # 条件: 骨盆高度 < 0.3m 或 躯干倾斜角 > ~55度 (cos < 0.57)
+    robot_falling = DoneTerm(
+        func=mdp.robot_falling,
         params={
-            "command_name": "motion",
-            "threshold": 0.25,
-            "body_names": [
-                "left_ankle_roll_link",
-                "right_ankle_roll_link",
-                "left_wrist_yaw_link",
-                "right_wrist_yaw_link",
-            ],
+            "asset_cfg": SceneEntityCfg("robot"),
+            "height_threshold": 0.3,   # 骨盆最低高度 (米)
+            "tilt_threshold": 0.57,    # 倾斜余弦阈值 (约55度，cos(55°)≈0.574)
         },
     )
+    
+    # [已删除] Stage 1 Mimic 终止条件 - Stage 2 不需要
+    # anchor_pos = DoneTerm(...)  # 锚点位置偏差
+    # anchor_ori = DoneTerm(...)  # 锚点朝向偏差
+    # ee_body_pos = DoneTerm(...) # 四肢位置偏差
 
 
 @configclass
@@ -455,7 +533,7 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         self.decimation = 4
-        self.episode_length_s = 10.0
+        self.episode_length_s = 20.0  # Stage 2: 增加到 20 秒，给机器人更多时间尝试击打目标
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation

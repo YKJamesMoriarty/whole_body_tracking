@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 # 基于 Unitree G1 机器人的尺寸设计，适合拳击攻击动作
 # =============================================================================
 DEFAULT_TARGET_SAMPLING_RANGE = {
-    "x": (0.6, 0.65),   # 前方 50-60cm，有效攻击距离
+    "x": (0.6, 0.65),   # 前方 60-65cm，有效攻击距离
     "y": (-0.4, 0.4),    # 左右 ±40cm，覆盖左右出拳
     "z": (0.25, 0.5),    # 高度 25-50cm（胸部到下巴高度）
 }
@@ -112,9 +112,23 @@ class MotionCommand(CommandTerm):
         self.metrics["error_body_rot"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_joint_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_joint_vel"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
+        
+        # =====================================================================
+        # Stage 2: 替换无意义的 sampling metrics
+        # 
+        # 原 Stage 1 metrics (已移除):
+        # - sampling_entropy: 采样分布熵值 (Stage 2 始终为 0，无意义)
+        # - sampling_top1_prob: 最高概率 (Stage 2 始终为 1.0，无意义)  
+        # - sampling_top1_bin: 最可能的 bin (Stage 2 始终为 0，无意义)
+        # 
+        # Stage 2 新增 metrics:
+        # - resample_count: 记录目标重采样次数 (用于监控)
+        # - right_hand_to_target_dist: 右手到目标距离 (核心监控指标)
+        # - effector_speed: 攻击肢体速度 (监控出拳速度)
+        # =====================================================================
+        self.metrics["resample_count"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["right_hand_to_target_dist"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["effector_speed"] = torch.zeros(self.num_envs, device=self.device)
 
         # =====================================================================
         # Stage 2: 目标小球 (Target Sphere) 初始化
@@ -135,6 +149,64 @@ class MotionCommand(CommandTerm):
         # 引导大球半径 (固定值)
         self._guidance_sphere_radius = self.cfg.guidance_sphere_radius
         
+        # =====================================================================
+        # Stage 2: Hit 检测状态 (每个 env 独立维护)
+        # =====================================================================
+        
+        # 上次成功 Hit 的时间 (用于冷却机制)
+        # 形状: (num_envs,)，每个环境独立跟踪
+        self.last_hit_time = torch.full((self.num_envs,), -1.0, device=self.device)
+        
+        # 当前仿真时间 (每个 env 独立)
+        # 由 _update_command 更新
+        self.current_time = torch.zeros(self.num_envs, device=self.device)
+        
+        # Hit 冷却时间 (秒)
+        self.hit_cooldown = self.cfg.hit_cooldown
+        
+        # Hit 距离阈值 (米)
+        self.hit_distance_threshold = self.cfg.hit_distance_threshold
+        
+        # Hit 速度阈值 (米/秒)
+        self.hit_speed_threshold = self.cfg.hit_speed_threshold
+        
+        # 攻击肢体索引 (右手手腕)
+        self.effector_body_name = self.cfg.effector_body_name
+        self.effector_index = self.cfg.body_names.index(self.effector_body_name)
+        
+        # =====================================================================
+        # Stage 2: 课程学习状态
+        # =====================================================================
+        
+        # 当前课程难度等级 (0.0 ~ 1.0)
+        # 0.0 = 最简单 (小范围采样，接近中心点)
+        # 1.0 = 最难 (全范围采样)
+        self.curriculum_level = torch.tensor(0.0, device=self.device)
+        
+        # 课程升级所需的 Hit 成功率阈值
+        self.curriculum_hit_rate_threshold = self.cfg.curriculum_hit_rate_threshold
+        
+        # 课程升级的步长
+        self.curriculum_level_step = self.cfg.curriculum_level_step
+        
+        # 滑动窗口大小 (用于计算最近 N step 的 Hit 率)
+        self.curriculum_window_size = self.cfg.curriculum_window_size
+        
+        # 滑动窗口: 记录最近 window_size 个 step 的 Hit 数量
+        # 每个位置存储该 step 所有 env 的 Hit 总数
+        self._hit_history = torch.zeros(self.curriculum_window_size, dtype=torch.long, device=self.device)
+        self._hit_history_idx = 0  # 当前写入位置 (循环写入)
+        self._hit_history_filled = False  # 窗口是否已填满
+        
+        # 初始采样范围 (Level 0) 和最终采样范围 (Level 1)
+        self._init_sampling_range = self.cfg.init_sampling_range
+        self._final_sampling_range = self.cfg.target_sampling_range
+        
+        # Hit 相关的 metrics
+        self.metrics["hit_count"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["curriculum_level"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["curriculum_hit_rate"] = torch.zeros(self.num_envs, device=self.device)
+        
         # 初始化目标位置（会在 reset 时被重新采样）
         self._init_target_positions()
 
@@ -143,14 +215,39 @@ class MotionCommand(CommandTerm):
         # 在采样范围内随机采样目标位置
         self._resample_target_positions(torch.arange(self.num_envs, device=self.device))
     
+    def _get_current_sampling_range(self) -> dict:
+        """
+        根据当前课程等级计算采样范围
+        
+        使用线性插值：
+        range = init_range + curriculum_level * (final_range - init_range)
+        
+        Returns:
+            dict: 当前课程等级对应的采样范围 {"x": (min, max), "y": ..., "z": ...}
+        """
+        level = self.curriculum_level.item()
+        current_range = {}
+        
+        for axis in ["x", "y", "z"]:
+            init_min, init_max = self._init_sampling_range[axis]
+            final_min, final_max = self._final_sampling_range[axis]
+            
+            # 线性插值
+            current_min = init_min + level * (final_min - init_min)
+            current_max = init_max + level * (final_max - init_max)
+            current_range[axis] = (current_min, current_max)
+        
+        return current_range
+    
     def _resample_target_positions(self, env_ids: torch.Tensor):
         """
         为指定环境重新采样目标位置
         
         采样逻辑:
-        1. 在局部坐标系 (相对于参考动作第一帧的 Root) 中采样
-        2. 将局部坐标转换到世界坐标系
-        3. 加上各环境的 origin 偏移
+        1. 根据当前课程等级计算采样范围
+        2. 在局部坐标系 (相对于参考动作第一帧的 Root) 中采样
+        3. 将局部坐标转换到世界坐标系
+        4. 加上各环境的 origin 偏移
         
         Args:
             env_ids: 需要重新采样的环境索引
@@ -160,10 +257,14 @@ class MotionCommand(CommandTerm):
         
         num_samples = len(env_ids)
         
-        # 在局部坐标系中采样目标位置
-        x_range = self._target_sampling_range["x"]
-        y_range = self._target_sampling_range["y"]
-        z_range = self._target_sampling_range["z"]
+        # 根据课程等级获取当前采样范围
+        current_range = self._get_current_sampling_range()
+        x_range = current_range["x"]
+        y_range = current_range["y"]
+        z_range = current_range["z"]
+        
+        # 更新内部状态以供可视化使用
+        self._target_sampling_range = current_range
         
         # 随机采样 (num_samples, 3)
         local_target_pos = torch.zeros(num_samples, 3, device=self.device)
@@ -184,6 +285,139 @@ class MotionCommand(CommandTerm):
         
         # 更新目标位置
         self.target_pos_w[env_ids] = world_target_pos
+        
+        # 重置被采样环境的 Hit 状态
+        self.last_hit_time[env_ids] = -1.0
+    
+    def check_hit(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        检查是否发生有效 Hit
+        
+        Hit 条件 (必须同时满足):
+        1. 距离达标: effector 到 target 的距离 < hit_distance_threshold
+        2. 速度达标: effector 的速度 > hit_speed_threshold
+        3. 冷却达标: current_time - last_hit_time > hit_cooldown
+        
+        Returns:
+            hit_mask: (num_envs,) bool, 哪些环境发生了有效 Hit
+            distances: (num_envs,) float, effector 到 target 的距离
+            speeds: (num_envs,) float, effector 的速度
+        """
+        # 获取攻击肢体的位置和速度
+        effector_pos_w = self.robot_body_pos_w[:, self.effector_index]  # (num_envs, 3)
+        effector_vel_w = self.robot_body_lin_vel_w[:, self.effector_index]  # (num_envs, 3)
+        
+        # 计算距离和速度
+        distances = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
+        speeds = torch.norm(effector_vel_w, dim=-1)  # (num_envs,)
+        
+        # 检查三个条件
+        dist_ok = distances < self.hit_distance_threshold
+        speed_ok = speeds > self.hit_speed_threshold
+        cooldown_ok = (self.current_time - self.last_hit_time) > self.hit_cooldown
+        
+        # 综合判断
+        hit_mask = dist_ok & speed_ok & cooldown_ok
+        
+        # 更新 Hit 时间 (只对成功 Hit 的环境)
+        self.last_hit_time = torch.where(hit_mask, self.current_time, self.last_hit_time)
+        
+        return hit_mask, distances, speeds
+    
+    def update_curriculum(self, hit_mask: torch.Tensor):
+        """
+        更新课程学习状态 (使用滑动窗口统计)
+        
+        滑动窗口机制:
+        ==============
+        - 维护一个大小为 window_size (500) 的循环数组
+        - 每个 step 记录所有 env 的 Hit 总数到当前位置
+        - 位置指针循环前进，新数据自动覆盖最旧的数据
+        - 始终统计最近 500 step 的 Hit 情况
+        
+        Hit 率计算:
+        ===========
+        hit_rate = total_hits / (window_size × num_envs)
+        
+        例如: window_size=500, num_envs=4
+        - 总机会数 = 500 × 4 = 2000
+        - 如果 500 step 内共 Hit 40 次
+        - hit_rate = 40 / 2000 = 2%
+        
+        升级条件:
+        ========
+        1. 滑动窗口已填满 (至少运行了 500 step)
+        2. Hit 成功率 >= threshold (默认 2%)
+        3. 当前未满级
+        
+        Args:
+            hit_mask: (num_envs,) bool, 本次 step 哪些环境发生了 Hit
+        """
+        # =====================================================================
+        # 滑动窗口统计: 记录最近 window_size 个 step 的 Hit 情况
+        # =====================================================================
+        
+        # 将本次 step 的 Hit 数量写入滑动窗口
+        hit_count_this_step = hit_mask.sum().long()
+        self._hit_history[self._hit_history_idx] = hit_count_this_step
+        self._hit_history_idx = (self._hit_history_idx + 1) % self.curriculum_window_size
+        
+        # 检查窗口是否已填满 (第一轮循环完成后)
+        if self._hit_history_idx == 0:
+            self._hit_history_filled = True
+        
+        # 计算滑动窗口内的 Hit 成功率
+        # Hit 率 = 窗口内总 Hit 次数 / (窗口大小 * num_envs)
+        if self._hit_history_filled:
+            # 窗口已满，使用完整窗口
+            total_hits = self._hit_history.sum().item()
+            total_opportunities = self.curriculum_window_size * self.num_envs
+        else:
+            # 窗口未满，只使用已填充部分
+            total_hits = self._hit_history[:self._hit_history_idx].sum().item()
+            total_opportunities = self._hit_history_idx * self.num_envs
+        
+        if total_opportunities > 0:
+            current_hit_rate = total_hits / total_opportunities
+        else:
+            current_hit_rate = 0.0
+        
+        # 更新 metrics
+        self.metrics["curriculum_level"][:] = self.curriculum_level.item()
+        self.metrics["curriculum_hit_rate"][:] = current_hit_rate
+        self.metrics["hit_count"][:] = hit_mask.float()
+        
+        # =====================================================================
+        # 课程升级判断
+        # 条件: 滑动窗口已满 且 Hit 率 >= 阈值 且 未到满级
+        # =====================================================================
+        if (self._hit_history_filled and 
+            current_hit_rate >= self.curriculum_hit_rate_threshold and
+            self.curriculum_level < 1.0):
+            
+            # 升级!
+            old_level = self.curriculum_level.item()
+            self.curriculum_level = torch.clamp(
+                self.curriculum_level + self.curriculum_level_step, 
+                max=1.0
+            )
+            new_level = self.curriculum_level.item()
+            
+            # 重置滑动窗口 (新难度从零开始统计)
+            self._hit_history.zero_()
+            self._hit_history_idx = 0
+            self._hit_history_filled = False
+            
+            # 打印升级信息
+            print(f"\n{'='*60}")
+            print(f">>> CURRICULUM LEVEL UP! {old_level:.2f} -> {new_level:.2f}")
+            print(f">>> Hit Rate (last {self.curriculum_window_size} steps): {current_hit_rate:.2%}")
+            new_range = self._get_current_sampling_range()
+            print(f">>> New Sampling Range:")
+            print(f">>>   X: [{new_range['x'][0]:.3f}, {new_range['x'][1]:.3f}]")
+            print(f">>>   Y: [{new_range['y'][0]:.3f}, {new_range['y'][1]:.3f}]")
+            print(f">>>   Z: [{new_range['z'][0]:.3f}, {new_range['z'][1]:.3f}]")
+            print(f"{'='*60}\n")
 
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation
@@ -291,8 +525,53 @@ class MotionCommand(CommandTerm):
 
         self.metrics["error_joint_pos"] = torch.norm(self.joint_pos - self.robot_joint_pos, dim=-1)
         self.metrics["error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
+        
+        # =====================================================================
+        # Stage 2: 手部速度监控 (方法2 - 记录到 wandb)
+        # 用于分析训练过程中手部速度的变化趋势
+        # =====================================================================
+        
+        # 获取右手 (right_wrist_yaw_link) 的速度
+        right_wrist_idx = self.cfg.body_names.index("right_wrist_yaw_link")
+        right_hand_lin_vel_w = self.robot_body_lin_vel_w[:, right_wrist_idx]  # (num_envs, 3)
+        right_hand_speed = torch.norm(right_hand_lin_vel_w, dim=-1)  # (num_envs,) 标量速度 m/s
+        
+        # 获取左手 (left_wrist_yaw_link) 的速度
+        left_wrist_idx = self.cfg.body_names.index("left_wrist_yaw_link")
+        left_hand_lin_vel_w = self.robot_body_lin_vel_w[:, left_wrist_idx]  # (num_envs, 3)
+        left_hand_speed = torch.norm(left_hand_lin_vel_w, dim=-1)  # (num_envs,) 标量速度 m/s
+        
+        # 记录到 metrics (会自动上传到 wandb)
+        self.metrics["right_hand_speed"] = right_hand_speed  # 右手速度 (m/s)
+        self.metrics["left_hand_speed"] = left_hand_speed    # 左手速度 (m/s)
+        self.metrics["max_hand_speed"] = torch.max(right_hand_speed, left_hand_speed)  # 双手最大速度
+        
+        # 计算手部到目标的距离 (用于分析 hit 奖励的触发条件)
+        right_hand_pos_w = self.robot_body_pos_w[:, right_wrist_idx]  # (num_envs, 3)
+        dist_to_target = torch.norm(right_hand_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
+        self.metrics["right_hand_to_target_dist"] = dist_to_target  # 右手到目标的距离 (m)
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
+        """
+        Stage 2 修改: 强制从动作第一帧开始训练
+        
+        原始 BeyondMimic 设计:
+        - 将动作数据分成多个片段 (bin)
+        - 统计每个片段的失败率
+        - 失败率高的片段采样概率更高 (难点强化训练)
+        - 随机选择一个片段的起始点
+        
+        Stage 2 修改原因:
+        - 分片训练会导致机器人从动作中间开始 (比如收拳阶段)
+        - 此时攻击目标不合理，因为收拳阶段不应该引导去打目标
+        - cross 数据是原地出拳，第一帧是标准站姿，最适合作为起点
+        
+        修改方案:
+        - 保留分片统计机制 (用于监控，指标仍然记录)
+        - 但每次 reset 都从 time_steps = 0 开始
+        - 这样每个 episode 都从标准站姿开始，目标采样位置稳定
+        """
+        # 保留原有的失败统计逻辑 (用于监控)
         episode_failed = self._env.termination_manager.terminated[env_ids]
         if torch.any(episode_failed):
             current_bin_index = torch.clamp(
@@ -301,32 +580,21 @@ class MotionCommand(CommandTerm):
             fail_bins = current_bin_index[env_ids][episode_failed]
             self._current_bin_failed[:] = torch.bincount(fail_bins, minlength=self.bin_count)
 
-        # Sample
-        sampling_probabilities = self.bin_failed_count + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
-        sampling_probabilities = torch.nn.functional.pad(
-            sampling_probabilities.unsqueeze(0).unsqueeze(0),
-            (0, self.cfg.adaptive_kernel_size - 1),  # Non-causal kernel
-            mode="replicate",
-        )
-        sampling_probabilities = torch.nn.functional.conv1d(sampling_probabilities, self.kernel.view(1, 1, -1)).view(-1)
-
-        sampling_probabilities = sampling_probabilities / sampling_probabilities.sum()
-
-        sampled_bins = torch.multinomial(sampling_probabilities, len(env_ids), replacement=True)
-
-        self.time_steps[env_ids] = (
-            (sampled_bins + sample_uniform(0.0, 1.0, (len(env_ids),), device=self.device))
-            / self.bin_count
-            * (self.motion.time_step_total - 1)
-        ).long()
-
-        # Metrics
-        H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
-        H_norm = H / math.log(self.bin_count)
-        pmax, imax = sampling_probabilities.max(dim=0)
-        self.metrics["sampling_entropy"][:] = H_norm
-        self.metrics["sampling_top1_prob"][:] = pmax
-        self.metrics["sampling_top1_bin"][:] = imax.float() / self.bin_count
+        # =====================================================================
+        # Stage 2 核心修改: 强制从第一帧开始
+        # 
+        # 原 Stage 1 逻辑: 根据各 bin 的失败率自适应采样起始帧
+        # Stage 2 逻辑: 固定从 frame 0 开始，机器人始终以准备姿态作为参考
+        # 
+        # 注意: sampling_entropy, sampling_top1_prob, sampling_top1_bin 这三个
+        # metrics 在 Stage 2 中不再有意义 (始终是 0, 1.0, 0)，已移除。
+        # 替代为 Stage 2 特有的 metrics (hit_count, curriculum_level 等)
+        # =====================================================================
+        self.time_steps[env_ids] = 0
+        
+        # Stage 2 专用 metrics: 记录采样事件
+        # 由于固定从 frame 0 开始，这里只记录发生了重采样
+        self.metrics["resample_count"][:] = self.metrics.get("resample_count", torch.zeros(self.num_envs, device=self.device)) + len(env_ids) / self.num_envs
 
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
@@ -369,6 +637,12 @@ class MotionCommand(CommandTerm):
 
     def _update_command(self):
         self.time_steps += 1
+        
+        # Stage 2: 更新当前仿真时间 (每个 env 独立)
+        # dt = decimation * sim.dt
+        dt = self._env.cfg.decimation * self._env.cfg.sim.dt
+        self.current_time += dt
+        
         env_ids = torch.where(self.time_steps >= self.motion.time_step_total)[0]
         self._resample_command(env_ids)
 
@@ -388,6 +662,21 @@ class MotionCommand(CommandTerm):
             self.cfg.adaptive_alpha * self._current_bin_failed + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
         )
         self._current_bin_failed.zero_()
+        
+        # =====================================================================
+        # Stage 2: 更新监控 metrics
+        # 每个 step 记录关键指标，用于 WandB 监控训练进度
+        # =====================================================================
+        
+        # 计算右手到目标的距离
+        effector_pos_w = self.robot_body_pos_w[:, self.effector_index]  # (num_envs, 3)
+        effector_vel_w = self.robot_body_lin_vel_w[:, self.effector_index]  # (num_envs, 3)
+        
+        distances = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
+        speeds = torch.norm(effector_vel_w, dim=-1)  # (num_envs,)
+        
+        self.metrics["right_hand_to_target_dist"][:] = distances
+        self.metrics["effector_speed"][:] = speeds
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
@@ -452,6 +741,35 @@ class MotionCommand(CommandTerm):
     def _debug_vis_callback(self, event):
         if not self.robot.is_initialized:
             return
+        
+        # =====================================================================
+        # Stage 2: 手部速度实时打印 (方法1 - 用于 play 时观察)
+        # 帮助设计奖励函数：了解正常出拳时手部能达到的速度范围
+        # 设置完奖励函数后可以注释掉这段代码
+        # =====================================================================
+        right_wrist_idx = self.cfg.body_names.index("right_wrist_yaw_link")
+        left_wrist_idx = self.cfg.body_names.index("left_wrist_yaw_link")
+        
+        # 获取手部速度 (只取第一个环境的数据用于显示)
+        right_hand_vel = self.robot_body_lin_vel_w[0, right_wrist_idx]  # (3,)
+        left_hand_vel = self.robot_body_lin_vel_w[0, left_wrist_idx]    # (3,)
+        right_speed = torch.norm(right_hand_vel).item()  # 标量 m/s
+        left_speed = torch.norm(left_hand_vel).item()    # 标量 m/s
+        
+        # 获取右手到目标的距离
+        right_hand_pos = self.robot_body_pos_w[0, right_wrist_idx]  # (3,)
+        dist_to_target = torch.norm(right_hand_pos - self.target_pos_w[0]).item()  # m
+        
+        # 将手部速度写入日志文件 (避免被 Isaac Lab 警告淹没)
+        # 使用方法: 在另一个终端运行 tail -f logs/hand_speed.log 实时查看
+        max_speed = max(right_speed, left_speed)
+        if max_speed > 0.5:  # 速度超过 0.5 m/s 时才记录
+            import pathlib
+            log_dir = pathlib.Path(__file__).resolve().parents[6] / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "hand_speed.log"
+            with open(log_file, "a") as f:
+                f.write(f"R: {right_speed:.2f} m/s | L: {left_speed:.2f} m/s | Dist: {dist_to_target:.3f} m\n")
 
         self.current_anchor_visualizer.visualize(self.robot_anchor_pos_w, self.robot_anchor_quat_w)
         self.goal_anchor_visualizer.visualize(self.anchor_pos_w, self.anchor_quat_w)
@@ -663,21 +981,90 @@ class MotionCommandCfg(CommandTermCfg):
     # Stage 2: 目标小球配置 (Task-Oriented RL)
     # =========================================================================
     
-    # 目标小球采样范围 (相对于机器人 Root/Pelvis 的局部坐标系)
-    # 基于 Unitree G1 机器人的尺寸设计，适合拳击攻击动作
+    # 最终采样范围 (Level 1.0 时的范围)
+    # 相对于机器人 Root/Pelvis 的局部坐标系
     target_sampling_range: dict[str, tuple[float, float]] = field(
         default_factory=lambda: DEFAULT_TARGET_SAMPLING_RANGE.copy()
     )
     
+    # =========================================================================
+    # 初始采样范围 (Level 0.0 时的范围，课程学习起点)
+    # 
+    # 设计原则:
+    # - 必须在 DEFAULT_TARGET_SAMPLING_RANGE 的范围内
+    # - 设置为最终范围的中心点附近的极小区域
+    # - 便于初期学习，降低探索难度
+    # 
+    # DEFAULT_TARGET_SAMPLING_RANGE 中心点:
+    # - X: (0.6 + 0.65) / 2 = 0.625
+    # - Y: (-0.4 + 0.4) / 2 = 0.0
+    # - Z: (0.25 + 0.5) / 2 = 0.375
+    # =========================================================================
+    init_sampling_range: dict[str, tuple[float, float]] = field(
+        default_factory=lambda: {
+            "x": (0.624, 0.626),   # 前方 62.4-62.6cm (中心点 ±1mm)
+            "y": (-0.05, 0.05),   # 左右 ±5cm (中心点附近)
+            "z": (0.374, 0.376),  # 高度 37.4-37.6cm (中心点 ±1mm)
+        }
+    )
+    
     # 引导大球半径 (固定值，用于可视化奖励生效范围)
     guidance_sphere_radius: float = 0.25
+    
+    # =========================================================================
+    # Stage 2: Hit 检测配置
+    # =========================================================================
+    
+    # Hit 距离阈值 (米) - 对应目标小球半径
+    hit_distance_threshold: float = 0.06
+    
+    # Hit 速度阈值 (米/秒) - 区分"有效打击"和"轻轻触碰"
+    hit_speed_threshold: float = 0.5
+    
+    # Hit 冷却时间 (秒) - 防止一直把手放在目标上
+    # 设计为适配"5连击"长序列数据：迫使机器人击中后收手蓄力
+    hit_cooldown: float = 0.5
+    
+    # 攻击肢体名称
+    effector_body_name: str = "right_wrist_yaw_link"
+    
+    # =========================================================================
+    # Stage 2: 课程学习配置
+    # 
+    # 设计原则:
+    # - 采样范围从中心点逐步扩展到全范围
+    # - 设置 4 个等级 (0.0, 0.25, 0.5, 0.75, 1.0) 以简化课程
+    # - 使用滑动窗口统计最近 500 step 的 Hit 率
+    # - Hit 率 >= 75% 才能升级，确保当前难度已掌握
+    # =========================================================================
+    
+    # 每次课程升级的步长 (0.0 ~ 1.0)
+    # 设置为 0.25 意味着有 4 个等级: Level 0, 0.25, 0.5, 0.75, 1.0
+    curriculum_level_step: float = 0.25
+    
+    # 课程升级所需的滑动窗口大小 (Step 数)
+    # 使用最近 500 step 的 Hit 率来判断是否升级
+    curriculum_window_size: int = 500
+    
+    # 课程升级所需的 Hit 成功率阈值 (0.0 ~ 1.0)
+    # 
+    # 计算合理阈值:
+    # - Hit 冷却时间 = 0.5 秒
+    # - 每 step 时长 = decimation × dt = 4 × 0.005 = 0.02 秒
+    # - 理论最大 Hit 率 = 0.02 / 0.5 = 4% (每次 Hit 后需等待 25 个 step)
+    # 
+    # 设置为 0.02 (2%) 表示:
+    # - 500 step × 4 env = 2000 次机会
+    # - 需要 40 次 Hit (平均每个 env 每 50 step Hit 一次)
+    # - 考虑到目标重采样和姿态调整，这是一个合理的要求
+    curriculum_hit_rate_threshold: float = 0.02
     
     # 目标小球 Marker 配置 (红色实心球)
     target_sphere_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/target_sphere",
         markers={
             "sphere": sim_utils.SphereCfg(
-                radius=0.06,  # 半径 6cm
+                radius=0.06,  # 半径 6cm，与 hit_distance_threshold 一致
                 visual_material=sim_utils.PreviewSurfaceCfg(
                     diffuse_color=(1.0, 0.2, 0.2),  # 红色
                     opacity=0.9,
