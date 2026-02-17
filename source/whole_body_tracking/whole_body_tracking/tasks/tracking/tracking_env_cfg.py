@@ -344,13 +344,15 @@ class RewardsCfg:
     # =========================================================================
     
     # [核心] 有效击中目标 - 最重要的奖励信号
+    # 权重 4.0: Hit 后目标会重采样，机器人需要连续出拳打不同位置
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=20.0,
+        weight=4.0,
         params={"command_name": "motion"},
     )
     
-    # [引导] 手靠近目标 - 解决稀疏奖励探索问题
+    # [引导] 首次进入引导大球范围 - 一次性奖励，帮助早期探索
+    # 权重 2.5: 比 mimic 奖励略高，引导机器人向目标方向挥拳
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
         weight=2.0,
@@ -363,14 +365,14 @@ class RewardsCfg:
     # [战术] 躯干朝向目标 - 鼓励正确的攻击姿态
     effector_face_target = RewTerm(
         func=mdp.effector_face_target,
-        weight=0.5,
+        weight=0.75,
         params={"command_name": "motion"},
     )
     
     # [速度] 击中时的速度奖励 - 鼓励有力的打击
     effector_hit_speed_bonus = RewTerm(
         func=mdp.effector_target_hit_velocity_bonus,
-        weight=1.0,
+        weight=1.5,
         params={
             "command_name": "motion",
             "speed_threshold": 0.5,
@@ -381,11 +383,27 @@ class RewardsCfg:
     # Stage 2 惩罚项
     # =========================================================================
     
-    # [反蹭分] 惩罚手在目标附近但不移动
+    # [反蹭分] 惩罚手在目标附近但不移动 (即时惩罚)
+    # 注意: pen_lingering 更严格，但 pen_touch_lazy 是即时的
+    # 两者配合: pen_touch_lazy 惩罚第一帧低速进入，pen_lingering 惩罚长时间停留
     pen_touch_lazy = RewTerm(
         func=mdp.pen_touch_lazy,
-        weight=3.0,  # 权重为正，函数返回负值
+        weight=2.0,  # 权重为正，函数返回负值
         params={"command_name": "motion"},
+    )
+    
+    # [持续停留] 惩罚手在目标小球范围内停留过长时间 (指数形式)
+    # 与 hit 后目标重采样配合，防止蹭分行为
+    # 不检查速度！即使机器人"绕圈"也会被惩罚
+    # 指数形式: 超时 0.1s → penalty≈0, 0.2s → ≈1.7, 0.3s → ≈6.4, 0.4s → ≈19
+    pen_lingering = RewTerm(
+        func=mdp.pen_lingering,
+        weight=1.0,  # 指数形式下权重不需要太大
+        params={
+            "command_name": "motion",
+            "grace_period": 0.1,   # 允许 0.1 秒穿越时间
+            "time_constant": 0.1,  # 指数增长时间常数
+        },
     )
     
     # [姿态] 惩罚身体过度倾斜
@@ -409,32 +427,32 @@ class RewardsCfg:
 
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=0.4,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
+        weight=0.5,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
         params={"command_name": "motion", "std": 0.3},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.4,  # Stage 2: 保留朝向约束
+        weight=0.5,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=0.85,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=0.9,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=1.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=0.5,  # Stage 2: 保留速度约束
+        weight=0.7,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=0.5,  # Stage 2: 保留角速度约束
+        weight=0.7,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
     
