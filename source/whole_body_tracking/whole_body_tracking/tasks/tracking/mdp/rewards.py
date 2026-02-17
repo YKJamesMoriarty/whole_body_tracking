@@ -239,23 +239,28 @@ def effector_target_near(
     guidance_radius: float = 0.25,
 ) -> torch.Tensor:
     """
-    [引导奖励] 引导攻击肢体靠近目标
+    [一次性引导奖励] 首次进入引导大球范围时给予奖励
     
-    公式: r = exp(-distance² / (2 * σ²))
-    其中 σ = guidance_radius，对应引导大球半径
+    触发条件:
+    1. effector 进入引导大球范围内 (distance < guidance_radius)
+    2. 该环境尚未触发过此奖励 (has_entered_guidance_sphere = False)
+    
+    重置条件:
+    - 目标小球被重采样时 (hit 成功或 episode 重置)
+    - has_entered_guidance_sphere 被重置为 False
     
     设计目的:
-    - 解决稀疏 Hit 奖励难以探索的问题 (Reward Shaping)
-    - 提供平滑梯度，引导肢体进入"引导球"范围
-    - 一旦进入范围，机器人更容易触发 Hit 奖励
+    - 原版持续奖励会激励机器人"停留"在引导球内蹭分
+    - 改为一次性奖励后，只引导机器人"向着目标挥拳"
+    - 进入后不再给奖励，消除停留激励
     
-    数学分析:
-    - d=0 时，r=1.0 (最大)
-    - d=σ 时，r≈0.61
-    - d=2σ 时，r≈0.14
+    与 hit 奖励的区别:
+    - 引导球半径 (0.25m) >> hit 小球半径 (0.06m)
+    - 不要求速度，只要进入就给
+    - 更容易触发，帮助 agent 早期探索
     
     Returns:
-        Tensor (num_envs,): [0, 1] 范围的奖励
+        Tensor (num_envs,): 1.0 表示首次进入，0.0 表示已进入过或未进入
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     
@@ -265,9 +270,17 @@ def effector_target_near(
     # 计算到目标的距离
     distance = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
     
-    # 高斯形式的奖励
-    sigma = guidance_radius
-    reward = torch.exp(-distance**2 / (2 * sigma**2))
+    # 检查是否在引导球范围内
+    in_guidance_sphere = distance < guidance_radius
+    
+    # 检查是否是首次进入 (尚未标记为已进入)
+    first_entry = in_guidance_sphere & (~command.has_entered_guidance_sphere)
+    
+    # 更新状态：标记为已进入
+    command.has_entered_guidance_sphere = command.has_entered_guidance_sphere | in_guidance_sphere
+    
+    # 只有首次进入时给予奖励
+    reward = first_entry.float()
     
     return reward
 
@@ -416,5 +429,57 @@ def posture_unstable(
     penalty = torch.where(tilt > tilt_threshold,
                           (tilt - tilt_threshold),
                           torch.zeros_like(tilt))
+    
+    return -penalty  # 返回负值作为惩罚
+
+
+def pen_lingering(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    grace_period: float = 0.1,  # 允许停留的最大时间 (秒)
+    time_constant: float = 0.1,  # 指数增长的时间常数
+) -> torch.Tensor:
+    """
+    [持续停留惩罚] 惩罚手在目标附近停留过长时间 (指数形式)
+    
+    逻辑:
+    - 当 effector 在 hit 范围内 (目标小球半径) 但没有产生有效 hit 时，开始计时
+    - 如果停留时间超过 grace_period，开始惩罚
+    - 惩罚随超时时间**指数级增长**
+    
+    设计目的:
+    - 防止机器人把手放在目标上"蹭分"
+    - 即使机器人"绕圈"保持高速度，只要一直待在范围内就会被惩罚
+    - grace_period 给予合理的"穿越"时间，不惩罚快速通过
+    - 指数形式：短暂穿越惩罚很小，长时间停留惩罚爆炸式增长
+    
+    数学 (指数形式):
+    - penalty = exp((t - grace_period) / τ) - 1, 当 t > grace_period
+    - τ = time_constant, 控制增长速度
+    - t = 0.1s: penalty = 0 (刚到宽限期)
+    - t = 0.2s: penalty = exp(0.1/0.1) - 1 = e - 1 ≈ 1.72
+    - t = 0.3s: penalty = exp(0.2/0.1) - 1 = e² - 1 ≈ 6.39
+    - t = 0.4s: penalty = exp(0.3/0.1) - 1 = e³ - 1 ≈ 19.09
+    
+    注意:
+    - 此惩罚需要配合 commands.py 中的 time_near_target 状态
+    - 当发生有效 hit 或手离开范围时，time_near_target 会被重置
+    - 不检查速度！无论机器人是静止还是"绕圈"，只要停留就惩罚
+    
+    Returns:
+        Tensor (num_envs,): 惩罚值，正常情况为 0
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    
+    # 获取在目标附近的持续时间
+    time_near = command.time_near_target  # (num_envs,)
+    
+    # 计算超时量
+    overtime = time_near - grace_period
+    overtime = torch.clamp(overtime, min=0.0)
+    
+    # 指数形式惩罚
+    # exp(overtime / τ) - 1: 在 overtime=0 时为 0，随 overtime 增加指数增长
+    penalty = torch.exp(overtime / time_constant) - 1.0
     
     return -penalty  # 返回负值作为惩罚
