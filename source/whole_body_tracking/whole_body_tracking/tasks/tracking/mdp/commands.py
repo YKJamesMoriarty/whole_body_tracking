@@ -175,6 +175,28 @@ class MotionCommand(CommandTerm):
         self.effector_index = self.cfg.body_names.index(self.effector_body_name)
         
         # =====================================================================
+        # Stage 2: 持续接近检测 (防止蹭分)
+        # =====================================================================
+        
+        # 记录每个环境在目标附近的持续时间 (秒)
+        # 当手进入 hit_distance_threshold 范围内时开始计时
+        # 当手离开范围或发生有效 hit 时重置
+        self.time_near_target = torch.zeros(self.num_envs, device=self.device)
+        
+        # 单步时间 (用于累积)
+        self.step_dt = self._env.step_dt
+        
+        # =====================================================================
+        # Stage 2: 一次性引导球进入奖励状态
+        # =====================================================================
+        
+        # 记录每个环境是否已经进入过引导大球范围
+        # True = 已经进入过，不再给予奖励
+        # False = 尚未进入，首次进入时给予奖励
+        # 在目标重采样时重置为 False
+        self.has_entered_guidance_sphere = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        
+        # =====================================================================
         # Stage 2: 课程学习状态
         # =====================================================================
         
@@ -288,6 +310,13 @@ class MotionCommand(CommandTerm):
         
         # 重置被采样环境的 Hit 状态
         self.last_hit_time[env_ids] = -1.0
+        
+        # 重置被采样环境的持续接近时间
+        self.time_near_target[env_ids] = 0.0
+        
+        # 重置被采样环境的引导球进入状态
+        # 目标移动后，需要重新进入才能获得奖励
+        self.has_entered_guidance_sphere[env_ids] = False
     
     def check_hit(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -322,7 +351,46 @@ class MotionCommand(CommandTerm):
         # 更新 Hit 时间 (只对成功 Hit 的环境)
         self.last_hit_time = torch.where(hit_mask, self.current_time, self.last_hit_time)
         
+        # =====================================================================
+        # 关键修复: Hit 成功后立即重采样目标位置
+        # 防止机器人"蹭分"：打中后把手放在目标上等待冷却
+        # 强迫机器人收手→重新出拳打新位置
+        # =====================================================================
+        hit_env_ids = torch.where(hit_mask)[0]
+        if len(hit_env_ids) > 0:
+            self._resample_target_positions(hit_env_ids)
+        
+        # =====================================================================
+        # 更新持续接近时间 (用于 pen_lingering 惩罚)
+        # =====================================================================
+        self._update_time_near_target(distances, hit_mask)
+        
         return hit_mask, distances, speeds
+    
+    def _update_time_near_target(self, distances: torch.Tensor, hit_mask: torch.Tensor):
+        """
+        更新每个环境在目标附近的持续时间
+        
+        逻辑:
+        - 如果 distance < hit_distance_threshold: 累加 step_dt
+        - 如果 distance >= hit_distance_threshold: 重置为 0
+        - 如果发生有效 hit: 重置为 0 (因为目标已经被重采样)
+        
+        Args:
+            distances: (num_envs,) effector 到 target 的距离
+            hit_mask: (num_envs,) 是否发生了有效 Hit
+        """
+        # 检查是否在范围内
+        in_range = distances < self.hit_distance_threshold
+        
+        # 累加或重置
+        # 在范围内: time += step_dt
+        # 不在范围内或发生 hit: time = 0
+        self.time_near_target = torch.where(
+            in_range & ~hit_mask,  # 在范围内但没有 hit
+            self.time_near_target + self.step_dt,
+            torch.zeros_like(self.time_near_target)  # 其他情况重置
+        )
     
     def update_curriculum(self, hit_mask: torch.Tensor):
         """
@@ -1048,16 +1116,29 @@ class MotionCommandCfg(CommandTermCfg):
     
     # 课程升级所需的 Hit 成功率阈值 (0.0 ~ 1.0)
     # 
-    # 计算合理阈值:
-    # - Hit 冷却时间 = 0.5 秒
-    # - 每 step 时长 = decimation × dt = 4 × 0.005 = 0.02 秒
-    # - 理论最大 Hit 率 = 0.02 / 0.5 = 4% (每次 Hit 后需等待 25 个 step)
+    # =========================================================================
+    # 阈值计算分析 (考虑 Hit 后目标重采样):
+    # =========================================================================
     # 
-    # 设置为 0.02 (2%) 表示:
-    # - 500 step × 4 env = 2000 次机会
-    # - 需要 40 次 Hit (平均每个 env 每 50 step Hit 一次)
-    # - 考虑到目标重采样和姿态调整，这是一个合理的要求
-    curriculum_hit_rate_threshold: float = 0.02
+    # Step 时长 = decimation × dt = 4 × 0.005 = 0.02 秒
+    # 
+    # 一次完整攻击周期 (Hit 后目标移动到新位置):
+    #   - 出拳攻击: ~0.3s
+    #   - 收回手臂: ~0.3s  
+    #   - 瞄准新位置: ~0.2s
+    #   - 总计: ~0.8-1.0s = 40-50 steps
+    # 
+    # 理论最大 Hit 率 = 1 hit / 50 steps = 2%
+    # 
+    # 设置为 0.005 (0.5%) 表示:
+    #   - 达到理论上限的 25%
+    #   - 500 steps × 128 envs = 64000 次机会
+    #   - 需要 320 次 Hit (每 env 平均 2.5 次/500steps)
+    #   - 每 env 约 4s 完成一次有效攻击，合理
+    # 
+    # 注意: 由于 Hit 后目标重采样，阈值比旧版 (0.02) 大幅降低
+    # =========================================================================
+    curriculum_hit_rate_threshold: float = 0.005
     
     # 目标小球 Marker 配置 (红色实心球)
     target_sphere_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
