@@ -347,7 +347,7 @@ class RewardsCfg:
     # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=20.0,
+        weight=15.0,
         params={"command_name": "motion"},
     )
     
@@ -364,7 +364,7 @@ class RewardsCfg:
     # - 设为 3.0 让 Near 奖励有足够吸引力，鼓励机器人主动进攻
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=3.0,
+        weight=8.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,  # 引导球半径
@@ -392,7 +392,7 @@ class RewardsCfg:
     # Hit 后 0.2s 开始，如果手还在小球内就惩罚
     pen_linger_in_hit_sphere = RewTerm(
         func=mdp.pen_linger_in_hit_sphere,
-        weight=2.0,  # 权重为正，函数返回负值
+        weight=5.0,  # 权重为正，函数返回负值
         params={
             "command_name": "motion",
             "grace_period": 0.2,
@@ -447,22 +447,22 @@ class RewardsCfg:
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=0.9,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=0.8,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=0.9,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=0.8,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=0.7,  # Stage 2: 保留速度约束
+        weight=0.5,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=0.7,  # Stage 2: 保留角速度约束
+        weight=0.5,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
     
