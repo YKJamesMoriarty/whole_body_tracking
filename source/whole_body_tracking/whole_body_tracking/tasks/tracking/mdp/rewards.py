@@ -163,25 +163,25 @@ def effector_target_hit(
     """
     [核心任务奖励] 有效击中目标的脉冲奖励
     
-    Hit 条件 (必须同时满足):
-    1. 距离达标: effector 到 target 的距离 < hit_distance_threshold (0.06m)
-    2. 速度达标: effector 的速度 > hit_speed_threshold (0.5 m/s)
-       注意: 使用绝对速度模长，不用投影速度，因为摆拳的切向速度很大
-    3. 冷却达标: current_time - last_hit_time > hit_cooldown (0.5s)
+    Hit 条件 (简化版 - 只看距离):
+    - effector 到 target 的距离 < hit_distance_threshold (0.06m)
+    - 任务奖励处于生效状态 (不在 Hit 后的 1s 等待期)
     
-    设计目的:
-    - 这是整个 Stage 2 训练的**核心目标**
-    - 速度门控区分"有效打击"和"轻轻触碰"
-    - 冷却机制适配"5连击"长序列：迫使机器人击中后收手蓄力
+    Hit 后机制:
+    - 不立即重采样，启动 1s 延迟计时器
+    - 这 1s 内任务奖励失效 (激励跟随参考动作收手，获得 Mimic 奖励)
+    - 1s 后自动重采样目标位置
     
     Returns:
         Tensor (num_envs,): 1.0 表示有效 Hit，0.0 表示未 Hit
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     
+    # 更新 Hit 后延迟重采样计时器 (必须在 check_hit 之前调用)
+    command.update_hit_resample_timer()
+    
     # 调用 check_hit 方法进行检测
-    # 该方法会同时更新 last_hit_time
-    hit_mask, _, _ = command.check_hit()
+    hit_mask, _ = command.check_hit()
     
     # 更新课程学习状态
     command.update_curriculum(hit_mask)
@@ -189,98 +189,82 @@ def effector_target_hit(
     return hit_mask.float()
 
 
-def effector_target_hit_velocity_bonus(
-    env: ManagerBasedRLEnv,
-    command_name: str,
-    speed_threshold: float = 0.5,
-) -> torch.Tensor:
-    """
-    [速度奖励] 在 Hit 时刻根据速度给予额外奖励
-    
-    逻辑:
-    - 只在 Hit 成功时给予奖励
-    - 奖励值 = (speed - threshold) / threshold，归一化后的超额速度
-    - 速度越快，奖励越高 (但 clamp 防止过大)
-    
-    设计目的:
-    - 鼓励机器人打得更有力
-    - 权重设置为 1.0 左右，避免为了速度牺牲稳定性
-    
-    Returns:
-        Tensor (num_envs,): 速度奖励，只在 Hit 时非零
-    """
-    command: MotionCommand = env.command_manager.get_term(command_name)
-    
-    # 获取攻击肢体的速度
-    effector_vel_w = command.robot_body_lin_vel_w[:, command.effector_index]
-    speeds = torch.norm(effector_vel_w, dim=-1)
-    
-    # 获取攻击肢体的位置
-    effector_pos_w = command.robot_body_pos_w[:, command.effector_index]
-    distances = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
-    
-    # 检查是否在 Hit 范围内且速度达标
-    dist_ok = distances < command.hit_distance_threshold
-    speed_ok = speeds > speed_threshold
-    
-    # 计算超额速度奖励 (归一化)
-    extra_speed = (speeds - speed_threshold) / speed_threshold
-    extra_speed = torch.clamp(extra_speed, min=0.0, max=3.0)  # 最多 3 倍奖励
-    
-    # 只在 Hit 条件满足时给予奖励
-    reward = torch.where(dist_ok & speed_ok, extra_speed, torch.zeros_like(extra_speed))
-    
-    return reward
-
-
 def effector_target_near(
     env: ManagerBasedRLEnv,
     command_name: str,
     guidance_radius: float = 0.25,
+    scale: float = 10.0,
 ) -> torch.Tensor:
     """
-    [一次性引导奖励] 首次进入引导大球范围时给予奖励
+    [进展奖励] 只有当 effector 比历史最近距离更近时才给奖励
+    
+    核心设计:
+    - 维护 min_distance_to_target: 当前 Hit 周期内的历史最近距离
+    - 只有当 current_distance < min_distance_to_target 时才给奖励
+    - 奖励 = (min_distance - current_distance) * scale
+    - 更新 min_distance = current_distance
+    
+    行为分析:
+    - 手停在原地: 没有奖励 (距离没变近)
+    - 手绕圈: 没有奖励 (距离没变近)
+    - 手向目标移动: 有奖励 (奖励与接近量成正比)
+    - 手 Hit 到目标: 之后不可能更近，Near 奖励自然归零
+    
+    这完美解决了蹭分问题！
     
     触发条件:
-    1. effector 进入引导大球范围内 (distance < guidance_radius)
-    2. 该环境尚未触发过此奖励 (has_entered_guidance_sphere = False)
+    1. effector 在引导大球范围内 (distance < guidance_radius)
+    2. current_distance < min_distance_to_target
+    3. 任务奖励处于生效状态
     
     重置条件:
-    - 目标小球被重采样时 (hit 成功或 episode 重置)
-    - has_entered_guidance_sphere 被重置为 False
+    - 目标小球被重采样时 (Hit 后 1s 或 episode 重置)
+    - min_distance_to_target 被重置为 10.0 (大值)
     
-    设计目的:
-    - 原版持续奖励会激励机器人"停留"在引导球内蹭分
-    - 改为一次性奖励后，只引导机器人"向着目标挥拳"
-    - 进入后不再给奖励，消除停留激励
-    
-    与 hit 奖励的区别:
-    - 引导球半径 (0.25m) >> hit 小球半径 (0.06m)
-    - 不要求速度，只要进入就给
-    - 更容易触发，帮助 agent 早期探索
+    Args:
+        guidance_radius: 引导大球半径 (米)
+        scale: 奖励放大系数 (每接近 1cm 奖励 = 0.01 * scale)
     
     Returns:
-        Tensor (num_envs,): 1.0 表示首次进入，0.0 表示已进入过或未进入
+        Tensor (num_envs,): 进展奖励，无进展时为 0
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
+    
+    # 如果任务奖励未生效 (Hit 后等待期)，返回 0
+    reward = torch.zeros(env.num_envs, device=env.device)
     
     # 获取攻击肢体位置
     effector_pos_w = command.robot_body_pos_w[:, command.effector_index]
     
     # 计算到目标的距离
-    distance = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
+    current_distance = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
     
     # 检查是否在引导球范围内
-    in_guidance_sphere = distance < guidance_radius
+    in_guidance_sphere = current_distance < guidance_radius
     
-    # 检查是否是首次进入 (尚未标记为已进入)
-    first_entry = in_guidance_sphere & (~command.has_entered_guidance_sphere)
-    
-    # 更新状态：标记为已进入
+    # 更新引导球进入状态 (用于监控)
     command.has_entered_guidance_sphere = command.has_entered_guidance_sphere | in_guidance_sphere
     
-    # 只有首次进入时给予奖励
-    reward = first_entry.float()
+    # 检查是否有进展 (比历史最近距离更近)
+    has_progress = current_distance < command.min_distance_to_target
+    
+    # 综合条件: 在引导球内 + 有进展 + 任务奖励生效
+    should_reward = in_guidance_sphere & has_progress & command.task_rewards_enabled
+    
+    # 计算进展奖励
+    progress = command.min_distance_to_target - current_distance  # 接近了多少
+    reward = torch.where(
+        should_reward,
+        progress * scale,
+        torch.zeros_like(current_distance)
+    )
+    
+    # 更新 min_distance (只在任务奖励生效时更新)
+    command.min_distance_to_target = torch.where(
+        should_reward,
+        current_distance,
+        command.min_distance_to_target
+    )
     
     return reward
 
@@ -298,20 +282,16 @@ def effector_face_target(
     3. 计算两者的点积 (cos θ)
     4. 映射到 [0, 1]: r = 0.5 * (dot + 1.0)
     
-    设计目的:
-    - 战术姿态约束：正对目标有利于发力、防守、保持平衡
-    - 防止机器人扭曲身体去够背后的目标
-    - 使动作更拟人
-    
-    数学分析:
-    - 完全正对时，dot=1, r=1.0
-    - 垂直时，dot=0, r=0.5
-    - 完全背对时，dot=-1, r=0.0
+    注意:
+    - 在 Hit 后的 1s 等待期内不计算此奖励 (task_rewards_enabled = False)
     
     Returns:
         Tensor (num_envs,): [0, 1] 范围的奖励
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
+    
+    # 如果任务奖励未生效 (Hit 后等待期)，返回 0
+    reward = torch.zeros(env.num_envs, device=env.device)
     
     # 获取机器人 Root (anchor) 的位置和朝向
     root_pos_w = command.robot_anchor_pos_w  # (num_envs, 3)
@@ -335,51 +315,19 @@ def effector_face_target(
     dot = torch.sum(world_forward * dir_to_target, dim=-1)  # (num_envs,)
     
     # 映射到 [0, 1]
-    reward = 0.5 * (dot + 1.0)
+    face_reward = 0.5 * (dot + 1.0)
+    
+    # 只在任务奖励生效时给予奖励
+    reward = torch.where(
+        command.task_rewards_enabled,
+        face_reward,
+        torch.zeros_like(face_reward)
+    )
     
     return reward
 
 
-def pen_touch_lazy(
-    env: ManagerBasedRLEnv,
-    command_name: str,
-) -> torch.Tensor:
-    """
-    [反蹭分惩罚] 惩罚手在目标附近但速度很慢的行为
-    
-    逻辑:
-    IF (distance < hit_threshold) AND (speed < hit_speed_threshold)
-    THEN penalty = -1.0
-    ELSE penalty = 0.0
-    
-    设计目的:
-    - 防止 RL 发现"手放在球里虽然没 Hit 但有靠近奖励"的漏洞
-    - 强制机器人：击中后必须迅速离开
-    - 赖在目标上不动会持续扣分
-    
-    Returns:
-        Tensor (num_envs,): -1.0 表示惩罚，0.0 表示无惩罚
-    """
-    command: MotionCommand = env.command_manager.get_term(command_name)
-    
-    # 获取攻击肢体位置和速度
-    effector_pos_w = command.robot_body_pos_w[:, command.effector_index]
-    effector_vel_w = command.robot_body_lin_vel_w[:, command.effector_index]
-    
-    # 计算距离和速度
-    distance = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
-    speed = torch.norm(effector_vel_w, dim=-1)
-    
-    # 检查是否"蹭分"
-    in_range = distance < command.hit_distance_threshold
-    too_slow = speed < command.hit_speed_threshold
-    
-    # 在范围内但速度慢 = 惩罚
-    penalty = torch.where(in_range & too_slow, 
-                          torch.ones_like(distance) * -1.0,
-                          torch.zeros_like(distance))
-    
-    return penalty
+# pen_touch_lazy 已删除: 进展奖励机制已解决蹭分问题，不需要额外惩罚
 
 
 def posture_unstable(
@@ -433,53 +381,138 @@ def posture_unstable(
     return -penalty  # 返回负值作为惩罚
 
 
-def pen_lingering(
+# =============================================================================
+# Stage 2: 收手阶段奖励/惩罚 (Hit 后冷静期内)
+# 
+# 设计原则:
+# - 只在 Hit 后的冷静期 (task_rewards_enabled = False) 内生效
+# - 冷静期前 0.2s 是宽限期，不触发这些奖励/惩罚
+# - 鼓励机器人收手，获得 Mimic 奖励
+# =============================================================================
+
+
+def pen_linger_in_hit_sphere(
     env: ManagerBasedRLEnv,
     command_name: str,
-    grace_period: float = 0.1,  # 允许停留的最大时间 (秒)
-    time_constant: float = 0.1,  # 指数增长的时间常数
+    grace_period: float = 0.2,
 ) -> torch.Tensor:
     """
-    [持续停留惩罚] 惩罚手在目标附近停留过长时间 (指数形式)
+    [收手惩罚-小球] Hit 后冷静期内，手停留在目标小球内的惩罚
     
-    逻辑:
-    - 当 effector 在 hit 范围内 (目标小球半径) 但没有产生有效 hit 时，开始计时
-    - 如果停留时间超过 grace_period，开始惩罚
-    - 惩罚随超时时间**指数级增长**
+    触发条件:
+    1. 处于冷静期 (task_rewards_enabled = False)
+    2. 冷静期已过宽限期 (hit_resample_timer < hit_resample_delay - grace_period)
+    3. effector 在目标小球内 (distance < hit_distance_threshold)
+    
+    机制:
+    - Hit 后 0~0.2s: 宽限期，允许拳头穿越目标，不惩罚
+    - Hit 后 0.2~1.0s: 如果手还在目标小球内，给予常量惩罚
     
     设计目的:
-    - 防止机器人把手放在目标上"蹭分"
-    - 即使机器人"绕圈"保持高速度，只要一直待在范围内就会被惩罚
-    - grace_period 给予合理的"穿越"时间，不惩罚快速通过
-    - 指数形式：短暂穿越惩罚很小，长时间停留惩罚爆炸式增长
-    
-    数学 (指数形式):
-    - penalty = exp((t - grace_period) / τ) - 1, 当 t > grace_period
-    - τ = time_constant, 控制增长速度
-    - t = 0.1s: penalty = 0 (刚到宽限期)
-    - t = 0.2s: penalty = exp(0.1/0.1) - 1 = e - 1 ≈ 1.72
-    - t = 0.3s: penalty = exp(0.2/0.1) - 1 = e² - 1 ≈ 6.39
-    - t = 0.4s: penalty = exp(0.3/0.1) - 1 = e³ - 1 ≈ 19.09
-    
-    注意:
-    - 此惩罚需要配合 commands.py 中的 time_near_target 状态
-    - 当发生有效 hit 或手离开范围时，time_near_target 会被重置
-    - 不检查速度！无论机器人是静止还是"绕圈"，只要停留就惩罚
+    - 强制机器人收手，不能把手放在目标上
+    - 与 Mimic 奖励配合，引导跟随参考动作
     
     Returns:
-        Tensor (num_envs,): 惩罚值，正常情况为 0
+        Tensor (num_envs,): 惩罚值 (-1.0 或 0.0)
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     
-    # 获取在目标附近的持续时间
-    time_near = command.time_near_target  # (num_envs,)
+    # 计算已过宽限期的条件
+    # hit_resample_timer 从 1.0 递减到 0
+    # 过宽限期 = timer < (delay - grace_period) = timer < 0.8
+    past_grace_period = command.hit_resample_timer < (command.hit_resample_delay - grace_period)
     
-    # 计算超时量
-    overtime = time_near - grace_period
-    overtime = torch.clamp(overtime, min=0.0)
+    # 在冷静期内 (task_rewards_enabled = False)
+    in_cooldown = ~command.task_rewards_enabled
     
-    # 指数形式惩罚
-    # exp(overtime / τ) - 1: 在 overtime=0 时为 0，随 overtime 增加指数增长
-    penalty = torch.exp(overtime / time_constant) - 1.0
+    # 获取距离
+    effector_pos_w = command.robot_body_pos_w[:, command.effector_index]
+    distance = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
     
-    return -penalty  # 返回负值作为惩罚
+    # 在目标小球内
+    in_hit_sphere = distance < command.hit_distance_threshold
+    
+    # 综合条件: 冷静期 + 过宽限期 + 在小球内
+    should_penalize = in_cooldown & past_grace_period & in_hit_sphere
+    
+    # 常量惩罚
+    penalty = torch.where(should_penalize,
+                          torch.ones_like(distance) * -1.0,
+                          torch.zeros_like(distance))
+    
+    return penalty
+
+
+def rew_retract_from_target(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    guidance_radius: float = 0.25,
+    grace_period: float = 0.2,
+    scale: float = 10.0,
+) -> torch.Tensor:
+    """
+    [收手奖励-大球] Hit 后冷静期内，手离开目标的进展奖励 (与 Near 对称设计)
+    
+    触发条件:
+    1. 处于冷静期 (task_rewards_enabled = False)
+    2. 冷静期已过宽限期 (0.2s 后)
+    3. effector 在引导大球内 (distance < guidance_radius)
+    4. 当前距离 > 历史最远距离
+    
+    机制:
+    - 进展奖励: 只有距离比历史最远更远时才给奖励
+    - 线性奖励: reward = (current_distance - max_distance) * scale
+    - 与进攻阶段的 Near 奖励完全对称
+    
+    奖励量分析:
+    - 引导球半径 = 0.25m, Hit 时距离 ≈ 0
+    - 手从 0m 收到引导球边缘 0.25m
+    - 理论最大累积奖励 = 0.25 * scale = 2.5 (与 Near 相同)
+    
+    设计目的:
+    - 激励机器人收手，远离目标
+    - 与 Mimic 奖励配合，引导跟随参考动作
+    - 与 Near 奖励对称，形成"进攻-收手"完整周期
+    
+    Returns:
+        Tensor (num_envs,): 进展奖励，无进展时为 0
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    
+    reward = torch.zeros(env.num_envs, device=env.device)
+    
+    # 计算已过宽限期的条件
+    past_grace_period = command.hit_resample_timer < (command.hit_resample_delay - grace_period)
+    
+    # 在冷静期内
+    in_cooldown = ~command.task_rewards_enabled
+    
+    # 获取距离
+    effector_pos_w = command.robot_body_pos_w[:, command.effector_index]
+    current_distance = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
+    
+    # 在引导大球内
+    in_guidance_sphere = current_distance < guidance_radius
+    
+    # 检查是否有进展 (比历史最远更远)
+    has_progress = current_distance > command.max_distance_from_target
+    
+    # 综合条件
+    should_reward = in_cooldown & past_grace_period & in_guidance_sphere & has_progress
+    
+    # 计算进展奖励 (线性)
+    progress = current_distance - command.max_distance_from_target
+    reward = torch.where(
+        should_reward,
+        progress * scale,
+        torch.zeros_like(current_distance)
+    )
+    
+    # 更新历史最远距离 (只在冷静期内更新)
+    command.max_distance_from_target = torch.where(
+        should_reward,
+        current_distance,
+        command.max_distance_from_target
+    )
+    
+    return reward
