@@ -138,6 +138,16 @@ class MotionCommand(CommandTerm):
         # 目标小球的世界坐标位置 (num_envs, 3)
         self.target_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
         
+        # =====================================================================
+        # Stage 2: 累积 Hit 计数器
+        # 
+        # 设计目的:
+        # - 记录每个环境在当前 episode 内成功 Hit 的次数
+        # - 用于更新 strikes_left 观测，让 Critic 区分不同阶段
+        # - Episode 重置时清零，冷静期后重采样时不清零
+        # =====================================================================
+        self.cumulative_hit_count = torch.zeros(self.num_envs, device=self.device)
+        
         # 获取参考动作第一帧的 Root (Pelvis) 位置和朝向
         # 这是采样区域的基准位置，在整个 episode 中保持不变
         self._reference_root_pos_w = self.motion.body_pos_w[0, 0].clone()  # (3,) 第一帧的 pelvis 位置
@@ -153,48 +163,82 @@ class MotionCommand(CommandTerm):
         # Stage 2: Hit 检测状态 (每个 env 独立维护)
         # =====================================================================
         
-        # 上次成功 Hit 的时间 (用于冷却机制)
-        # 形状: (num_envs,)，每个环境独立跟踪
-        self.last_hit_time = torch.full((self.num_envs,), -1.0, device=self.device)
-        
         # 当前仿真时间 (每个 env 独立)
         # 由 _update_command 更新
         self.current_time = torch.zeros(self.num_envs, device=self.device)
         
-        # Hit 冷却时间 (秒)
-        self.hit_cooldown = self.cfg.hit_cooldown
-        
-        # Hit 距离阈值 (米)
+        # Hit 距离阈值 (米) - 只用距离判断，不用速度
         self.hit_distance_threshold = self.cfg.hit_distance_threshold
-        
-        # Hit 速度阈值 (米/秒)
-        self.hit_speed_threshold = self.cfg.hit_speed_threshold
         
         # 攻击肢体索引 (右手手腕)
         self.effector_body_name = self.cfg.effector_body_name
         self.effector_index = self.cfg.body_names.index(self.effector_body_name)
         
         # =====================================================================
-        # Stage 2: 持续接近检测 (防止蹭分)
+        # Stage 2: Hit 后延迟重采样机制
+        # 
+        # 设计目的:
+        # - Hit 后目标位置保持 1 秒不变
+        # - 这 1 秒内任务奖励 (Hit/Near/Face/Speed) 全部失效
+        # - 鼓励机器人在奖励消失后跟随参考动作收手 (拿 Mimic 奖励)
+        # - 1 秒后重采样目标位置，任务奖励重新生效
         # =====================================================================
         
-        # 记录每个环境在目标附近的持续时间 (秒)
-        # 当手进入 hit_distance_threshold 范围内时开始计时
-        # 当手离开范围或发生有效 hit 时重置
-        self.time_near_target = torch.zeros(self.num_envs, device=self.device)
+        # Hit 后等待重采样的剩余时间 (秒)
+        # > 0 表示正在等待重采样 (任务奖励失效中)
+        # <= 0 表示正常状态 (任务奖励生效)
+        self.hit_resample_timer = torch.zeros(self.num_envs, device=self.device)
+        
+        # Hit 后到重采样的延迟时间 (秒)
+        self.hit_resample_delay = self.cfg.hit_resample_delay
+        
+        # 任务奖励是否生效 (Hit/Near/Face/Speed)
+        # False 表示在 Hit 后的等待期，任务奖励不计算
+        self.task_rewards_enabled = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         
         # 单步时间 (用于累积)
         self.step_dt = self._env.step_dt
         
         # =====================================================================
-        # Stage 2: 一次性引导球进入奖励状态
+        # Stage 2: 进展奖励状态 (Near 奖励)
+        # 
+        # 核心设计:
+        # - 只有当 current_distance < min_historical_distance 时才给奖励
+        # - 手停在原地: 没有奖励 (距离没变近)
+        # - 手绕圈: 没有奖励 (距离没变近)
+        # - 手向目标移动: 有奖励
+        # - 手 Hit 到目标: 距离=0，之后不可能更近，Near 奖励自然归零
+        # 
+        # 这完美解决了蹭分问题！
         # =====================================================================
         
+        # 当前 Hit 周期内，手到目标的历史最近距离
+        # 只有比这个距离更近时才给 Near 奖励
+        # Hit 后重采样时重置为一个大值
+        self.min_distance_to_target = torch.full((self.num_envs,), 10.0, device=self.device)
+        
         # 记录每个环境是否已经进入过引导大球范围
-        # True = 已经进入过，不再给予奖励
-        # False = 尚未进入，首次进入时给予奖励
-        # 在目标重采样时重置为 False
+        # 用于判断是否开始计算进展奖励
         self.has_entered_guidance_sphere = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        
+        # =====================================================================
+        # Stage 2: 收手阶段状态 (Hit 后冷静期内的奖励/惩罚)
+        # 
+        # 核心设计:
+        # - Hit 后 0~0.2s: 宽限期，不给惩罚/奖励 (允许拳头穿越目标)
+        # - Hit 后 0.2~1.0s: 激励收手
+        #   - 惩罚: 手在目标小球内 → 常量惩罚
+        #   - 奖励: 手离开目标越远越好 → 进展奖励 (与 Near 对称)
+        # =====================================================================
+        
+        # 冷静期内的宽限时间 (秒)
+        # Hit 后 0~grace_period 内不触发收手奖励/惩罚
+        self.retract_grace_period = 0.2
+        
+        # 收手阶段的历史最远距离 (用于进展奖励)
+        # 只有比这个距离更远时才给收手奖励
+        # Hit 时重置为 0 (因为 Hit 时距离接近 0)
+        self.max_distance_from_target = torch.zeros(self.num_envs, device=self.device)
         
         # =====================================================================
         # Stage 2: 课程学习状态
@@ -308,89 +352,106 @@ class MotionCommand(CommandTerm):
         # 更新目标位置
         self.target_pos_w[env_ids] = world_target_pos
         
-        # 重置被采样环境的 Hit 状态
-        self.last_hit_time[env_ids] = -1.0
+        # 重置被采样环境的任务奖励状态
+        self.task_rewards_enabled[env_ids] = True
+        self.hit_resample_timer[env_ids] = 0.0
         
-        # 重置被采样环境的持续接近时间
-        self.time_near_target[env_ids] = 0.0
+        # 重置进展奖励状态
+        # min_distance 重置为大值，让新目标可以触发进展奖励
+        self.min_distance_to_target[env_ids] = 10.0
         
-        # 重置被采样环境的引导球进入状态
-        # 目标移动后，需要重新进入才能获得奖励
+        # 重置引导球进入状态
         self.has_entered_guidance_sphere[env_ids] = False
+        
+        # 重置收手阶段状态 (重采样后进入进攻阶段，不需要收手)
+        self.max_distance_from_target[env_ids] = 0.0
     
-    def check_hit(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def check_hit(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
         检查是否发生有效 Hit
         
-        Hit 条件 (必须同时满足):
-        1. 距离达标: effector 到 target 的距离 < hit_distance_threshold
-        2. 速度达标: effector 的速度 > hit_speed_threshold
-        3. 冷却达标: current_time - last_hit_time > hit_cooldown
+        新设计 (简化版):
+        ==================
+        Hit 条件: 只看距离，不看速度和冷却
+        - effector 到 target 的距离 < hit_distance_threshold
+        - 任务奖励处于生效状态 (不在 Hit 后的等待期)
+        
+        Hit 后机制:
+        - 不立即重采样，而是启动 1 秒延迟计时器
+        - 这 1 秒内任务奖励失效 (Hit/Near/Face/Speed)
+        - 机器人在此期间跟随参考动作收手，获得 Mimic 奖励
+        - 1 秒后自动重采样目标位置，任务奖励重新生效
         
         Returns:
             hit_mask: (num_envs,) bool, 哪些环境发生了有效 Hit
             distances: (num_envs,) float, effector 到 target 的距离
-            speeds: (num_envs,) float, effector 的速度
         """
-        # 获取攻击肢体的位置和速度
+        # 获取攻击肢体的位置
         effector_pos_w = self.robot_body_pos_w[:, self.effector_index]  # (num_envs, 3)
-        effector_vel_w = self.robot_body_lin_vel_w[:, self.effector_index]  # (num_envs, 3)
         
-        # 计算距离和速度
+        # 计算距离
         distances = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
-        speeds = torch.norm(effector_vel_w, dim=-1)  # (num_envs,)
         
-        # 检查三个条件
+        # Hit 条件: 距离达标 且 任务奖励生效中
         dist_ok = distances < self.hit_distance_threshold
-        speed_ok = speeds > self.hit_speed_threshold
-        cooldown_ok = (self.current_time - self.last_hit_time) > self.hit_cooldown
-        
-        # 综合判断
-        hit_mask = dist_ok & speed_ok & cooldown_ok
-        
-        # 更新 Hit 时间 (只对成功 Hit 的环境)
-        self.last_hit_time = torch.where(hit_mask, self.current_time, self.last_hit_time)
+        hit_mask = dist_ok & self.task_rewards_enabled
         
         # =====================================================================
-        # 关键修复: Hit 成功后立即重采样目标位置
-        # 防止机器人"蹭分"：打中后把手放在目标上等待冷却
-        # 强迫机器人收手→重新出拳打新位置
+        # Hit 成功后: 启动延迟重采样计时器，禁用任务奖励，初始化收手状态
         # =====================================================================
         hit_env_ids = torch.where(hit_mask)[0]
         if len(hit_env_ids) > 0:
-            self._resample_target_positions(hit_env_ids)
+            # 启动延迟计时器
+            self.hit_resample_timer[hit_env_ids] = self.hit_resample_delay
+            # 禁用任务奖励
+            self.task_rewards_enabled[hit_env_ids] = False
+            # 初始化收手阶段的历史最远距离 (从当前距离开始，因为 Hit 时距离接近 0)
+            self.max_distance_from_target[hit_env_ids] = distances[hit_env_ids]
+            
+            # =========================================================================
+            # Stage 2: Hit 成功后的观测更新
+            # =========================================================================
+            
+            # (1) 递增累积 Hit 计数器
+            # - 让 strikes_left 观测值变化，Critic 知道"我已经 Hit 过了"
+            # - Episode 内累积，重置时清零
+            self.cumulative_hit_count[hit_env_ids] += 1.0
+            
+            # (2) 将 target_pos_w 设置到地下深处 [0, 0, -10]
+            # - 表示"当前没有攻击目标"
+            # - 在机器人局部坐标系中，Z=-10 表示地下 10 米
+            # - Critic 学到: target_pos 在地下 = 冷静期，没有 Hit 奖励
+            # - 注意: 需要加上 env_origin 偏移
+            underground_pos = torch.zeros(len(hit_env_ids), 3, device=self.device)
+            underground_pos[:, 2] = -10.0  # Z = -10 (地下)
+            self.target_pos_w[hit_env_ids] = underground_pos + self._env.scene.env_origins[hit_env_ids]
         
-        # =====================================================================
-        # 更新持续接近时间 (用于 pen_lingering 惩罚)
-        # =====================================================================
-        self._update_time_near_target(distances, hit_mask)
-        
-        return hit_mask, distances, speeds
+        return hit_mask, distances
     
-    def _update_time_near_target(self, distances: torch.Tensor, hit_mask: torch.Tensor):
+    def update_hit_resample_timer(self):
         """
-        更新每个环境在目标附近的持续时间
+        更新 Hit 后的延迟重采样计时器
         
-        逻辑:
-        - 如果 distance < hit_distance_threshold: 累加 step_dt
-        - 如果 distance >= hit_distance_threshold: 重置为 0
-        - 如果发生有效 hit: 重置为 0 (因为目标已经被重采样)
-        
-        Args:
-            distances: (num_envs,) effector 到 target 的距离
-            hit_mask: (num_envs,) 是否发生了有效 Hit
+        每个 step 调用一次:
+        - 减少计时器
+        - 计时器归零时触发重采样并重新启用任务奖励
         """
-        # 检查是否在范围内
-        in_range = distances < self.hit_distance_threshold
+        # 找出正在等待重采样的环境
+        waiting_mask = self.hit_resample_timer > 0
         
-        # 累加或重置
-        # 在范围内: time += step_dt
-        # 不在范围内或发生 hit: time = 0
-        self.time_near_target = torch.where(
-            in_range & ~hit_mask,  # 在范围内但没有 hit
-            self.time_near_target + self.step_dt,
-            torch.zeros_like(self.time_near_target)  # 其他情况重置
+        # 减少计时器
+        self.hit_resample_timer = torch.where(
+            waiting_mask,
+            self.hit_resample_timer - self.step_dt,
+            self.hit_resample_timer
         )
+        
+        # 检查哪些环境的计时器刚刚归零 (需要重采样)
+        timer_just_expired = (self.hit_resample_timer <= 0) & waiting_mask
+        resample_env_ids = torch.where(timer_just_expired)[0]
+        
+        if len(resample_env_ids) > 0:
+            self._resample_target_positions(resample_env_ids)
     
     def update_curriculum(self, hit_mask: torch.Tensor):
         """
@@ -665,12 +726,23 @@ class MotionCommand(CommandTerm):
         self.metrics["resample_count"][:] = self.metrics.get("resample_count", torch.zeros(self.num_envs, device=self.device)) + len(env_ids) / self.num_envs
 
     def _resample_command(self, env_ids: Sequence[int]):
+        """Episode 重置时调用，重新采样动作和目标位置"""
         if len(env_ids) == 0:
             return
         self._adaptive_sampling(env_ids)
         
         # Stage 2: 重新采样目标位置
         self._resample_target_positions(torch.tensor(env_ids, device=self.device))
+        
+        # =====================================================================
+        # Stage 2: Episode 重置时清零累积 Hit 计数器
+        # 
+        # 注意区分两种重采样:
+        # - _resample_command(): Episode 重置，需要清零累积计数
+        # - _resample_target_positions(): 冷静期后重采样，不清零累积计数
+        # =====================================================================
+        env_ids_tensor = torch.tensor(env_ids, device=self.device, dtype=torch.long)
+        self.cumulative_hit_count[env_ids_tensor] = 0.0
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -908,13 +980,19 @@ class MotionCommand(CommandTerm):
         绘制采样区域边界 (蓝色长方体线框)
         
         为每个环境绘制一个长方体的 12 条边
+        
+        注意: 始终绘制**最终采样范围** (课程等级 100% 时的范围)
+        而不是当前课程等级的采样范围，因为:
+        1. 初始课程等级为 0 时，采样范围非常小 (±1mm)，会被目标小球遮盖
+        2. 用户需要看到完整的最终目标区域，了解训练目标
         """
         color = [0.3, 0.5, 1.0, 0.8]  # 蓝色 RGBA
         thickness = 2.0
         
-        x_range = self._target_sampling_range["x"]
-        y_range = self._target_sampling_range["y"]
-        z_range = self._target_sampling_range["z"]
+        # 使用最终采样范围 (而不是当前课程等级的范围)
+        x_range = self._final_sampling_range["x"]
+        y_range = self._final_sampling_range["y"]
+        z_range = self._final_sampling_range["z"]
         
         source_positions = []
         target_positions = []
@@ -1084,14 +1162,16 @@ class MotionCommandCfg(CommandTermCfg):
     # =========================================================================
     
     # Hit 距离阈值 (米) - 对应目标小球半径
+    # 简化设计: 只用距离判断，不用速度
     hit_distance_threshold: float = 0.06
     
-    # Hit 速度阈值 (米/秒) - 区分"有效打击"和"轻轻触碰"
-    hit_speed_threshold: float = 0.5
-    
-    # Hit 冷却时间 (秒) - 防止一直把手放在目标上
-    # 设计为适配"5连击"长序列数据：迫使机器人击中后收手蓄力
-    hit_cooldown: float = 0.5
+    # Hit 后的延迟重采样时间 (秒)
+    # 设计目的:
+    # - Hit 后目标位置保持 1 秒不变
+    # - 这 1 秒内任务奖励失效，只有 Mimic 奖励
+    # - 鼓励机器人跟随参考动作收手
+    # - 1 秒后重采样目标位置，任务奖励重新生效
+    hit_resample_delay: float = 1.0
     
     # 攻击肢体名称
     effector_body_name: str = "right_wrist_yaw_link"
