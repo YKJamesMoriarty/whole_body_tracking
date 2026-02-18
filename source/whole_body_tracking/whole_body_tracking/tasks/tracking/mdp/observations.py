@@ -156,20 +156,31 @@ def target_relative_velocity(env: ManagerBasedEnv, command_name: str) -> torch.T
 
 def strikes_left(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
-    (3) 剩余攻击次数 (1 维)
+    (3) 累积 Hit 次数 (1 维)
     
-    含义: 归一化的剩余攻击次数，用于让策略知道还能打几拳/几脚
+    含义: 当前 episode 内成功 Hit 目标的累积次数
     
-    Stage 1: 设为常数 1.0（满攻击次数）
+    Stage 1: 常数 1.0 (模型训练时使用固定值)
     
-    Stage 2 TODO:
-    - 跟踪实际剩余攻击次数并归一化
-    - 例如：总共3次攻击机会，已用1次，则返回 2/3 ≈ 0.67
+    Stage 2: 返回累积 Hit 次数，让 Critic 区分不同阶段:
+    - cumulative_hit_count = 0: 还没 Hit 过，进攻阶段
+    - cumulative_hit_count = 1: 已 Hit 1 次，可能在冷静期或第二次进攻
+    - cumulative_hit_count = 2: 已 Hit 2 次，以此类推
+    
+    设计目的:
+    - 这是客观的物理事实，不是人工 flag
+    - Critic 可以学到: hit_count=0 且手靠近目标 → V(s) 高
+    - Critic 可以学到: hit_count=1 且手靠近目标 → V(s) 取决于冷静期状态
+    
+    注意:
+    - 名称保持 "strikes_left" 以兼容 Stage 1 模型加载
+    - 值的含义从 "剩余次数" 变为 "累积次数"，但不影响模型结构
     
     Returns:
-        Tensor (num_envs, 1): 归一化的剩余攻击次数
+        Tensor (num_envs, 1): 累积 Hit 次数
     """
-    return torch.ones(env.num_envs, 1, device=env.device)
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.cumulative_hit_count.view(env.num_envs, 1)
 
 
 def time_left(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
@@ -214,7 +225,7 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
     # Stage 1: 假设所有攻击都是右手出拳
     # 格式: [左手, 右手, 左脚, 右脚]
     one_hot = torch.zeros(env.num_envs, 4, device=env.device)
-    one_hot[:, 3] = 1.0  # 左手0，右手1，左脚2，右脚3
+    one_hot[:, 1] = 1.0  # 左手0，右手1，左脚2，右脚3
     
     # Stage 2 TODO: 根据以下信息动态确定活跃肢体:
     #   - 动作文件名 (例如: "cross" -> 右手, "hook_left" -> 左手)
@@ -268,7 +279,7 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
     # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4
-    one_hot[:, 4] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
+    one_hot[:, 0] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
     
     # Stage 2 TODO: 从以下来源解析技能类型:
     #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
