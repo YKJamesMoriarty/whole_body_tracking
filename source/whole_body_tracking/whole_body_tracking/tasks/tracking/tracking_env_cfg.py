@@ -364,7 +364,7 @@ class RewardsCfg:
     # - 设为 3.0 让 Near 奖励有足够吸引力，鼓励机器人主动进攻
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=7.0,
+        weight=4.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,  # 引导球半径
@@ -456,22 +456,22 @@ class RewardsCfg:
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=0.8,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=0.8,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=1.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=0.8,  # Stage 2: 保留速度约束
+        weight=1.0,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=0.8,  # Stage 2: 保留角速度约束
+        weight=1.0,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
     
