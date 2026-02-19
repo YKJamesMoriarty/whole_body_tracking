@@ -1163,7 +1163,7 @@ class MotionCommandCfg(CommandTermCfg):
     
     # Hit 距离阈值 (米) - 对应目标小球半径
     # 简化设计: 只用距离判断，不用速度
-    hit_distance_threshold: float = 0.06
+    hit_distance_threshold: float = 0.12
     
     # Hit 后的延迟重采样时间 (秒)
     # 设计目的:
