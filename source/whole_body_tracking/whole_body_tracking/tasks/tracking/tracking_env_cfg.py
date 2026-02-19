@@ -347,7 +347,7 @@ class RewardsCfg:
     # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=40.0,
+        weight=30.0,
         params={"command_name": "motion"},
     )
     
@@ -364,24 +364,24 @@ class RewardsCfg:
     # - 设为 3.0 让 Near 奖励有足够吸引力，鼓励机器人主动进攻
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=10.0,
+        weight=7.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,  # 引导球半径
-            "scale": 20.0,  # 每接近 1cm 奖励 0.1
+            "scale": 10.0,  # 每接近 1cm 奖励 0.1
         },
     )
     
     # [战术] 躯干朝向目标 - 鼓励正确的攻击姿态
     effector_face_target = RewTerm(
         func=mdp.effector_face_target,
-        weight=2.0,
+        weight=1.0,
         params={"command_name": "motion"},
     )
 
     effector_velocity_towards_target = RewTerm(
         func=mdp.effector_velocity_towards_target,
-        weight=8.0,  # 可调整
+        weight=6.0,  # 可调整
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,
@@ -412,7 +412,7 @@ class RewardsCfg:
     # 权重与 Near 相同，形成对称的进攻-收手周期
     rew_retract_from_target = RewTerm(
         func=mdp.rew_retract_from_target,
-        weight=20.0,  # 与 effector_target_near 相同
+        weight=5.0,  # 与 effector_target_near 相同
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,
@@ -446,12 +446,12 @@ class RewardsCfg:
 
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=0.35,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
+        weight=0.5,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
         params={"command_name": "motion", "std": 0.3},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.35,  # Stage 2: 保留朝向约束
+        weight=0.5,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_pos = RewTerm(
@@ -466,12 +466,12 @@ class RewardsCfg:
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=0.6,  # Stage 2: 保留速度约束
+        weight=0.8,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=0.6,  # Stage 2: 保留角速度约束
+        weight=0.8,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
     
