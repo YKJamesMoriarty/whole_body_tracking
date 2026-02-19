@@ -270,6 +270,7 @@ class MotionCommand(CommandTerm):
         
         # Hit 相关的 metrics
         self.metrics["hit_count"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["max_hit_count"] = torch.tensor(0.0, device=self.device)
         self.metrics["curriculum_level"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["curriculum_hit_rate"] = torch.zeros(self.num_envs, device=self.device)
         
@@ -515,6 +516,8 @@ class MotionCommand(CommandTerm):
         self.metrics["curriculum_level"][:] = self.curriculum_level.item()
         self.metrics["curriculum_hit_rate"][:] = current_hit_rate
         self.metrics["hit_count"][:] = hit_mask.float()
+        # 更新 max_hit_count 指标
+        self.metrics["max_hit_count"] = self.cumulative_hit_count.max().float()
         
         # =====================================================================
         # 课程升级判断
