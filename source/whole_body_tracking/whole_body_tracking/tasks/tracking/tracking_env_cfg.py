@@ -326,6 +326,21 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
+    # =========================================================================
+    # Stage 2  强化末端执行器（右手）的奖励
+    # =========================================================================
+    # Mimic 右手末端位置奖励
+    mimic_right_hand_pos = RewTerm(
+        func=mdp.mimic_right_hand_position_exp,
+        weight=1.0,  # 可根据实验调整
+        params={"command_name": "motion", "std": 0.3},
+    )
+    # Mimic 右手末端旋转奖励
+    mimic_right_hand_ori = RewTerm(
+        func=mdp.mimic_right_hand_orientation_exp,
+        weight=1.0,  # 可根据实验调整
+        params={"command_name": "motion", "std": 0.4},
+    )
     """Reward terms for the MDP.
     
     Stage 2: Task-Oriented RL 奖励配置 (进展奖励版)
@@ -364,7 +379,7 @@ class RewardsCfg:
     # - 设为 3.0 让 Near 奖励有足够吸引力，鼓励机器人主动进攻
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=4.0,
+        weight=2.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,  # 引导球半径
@@ -381,7 +396,7 @@ class RewardsCfg:
 
     effector_velocity_towards_target = RewTerm(
         func=mdp.effector_velocity_towards_target,
-        weight=6.0,  # 可调整
+        weight=5.0,  # 可调整
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,

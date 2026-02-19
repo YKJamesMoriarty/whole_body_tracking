@@ -549,3 +549,48 @@ def effector_velocity_towards_target(
 
     reward = torch.where(should_reward, vel_reward, torch.zeros_like(vel_reward))
     return reward
+# =================================================
+# 对末端执行器的跟踪增强奖励
+def mimic_right_hand_position_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
+    """
+    右手末端 mimic 位置奖励，鼓励机器人右手靠近参考动作的右手位置。
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    # 使用实际 body_names 中的右臂/右手 link 名称
+    right_hand_link_names = [
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+        "right_wrist_yaw_link",
+    ]
+    missing = [name for name in right_hand_link_names if name not in command.cfg.body_names]
+    assert not missing, f"Missing right hand link names in body_names: {missing}"
+    idxs = [command.cfg.body_names.index(name) for name in right_hand_link_names]
+    assert len(idxs) > 0, "No right hand link indexes found!"
+    error = torch.sum(
+        torch.square(command.body_pos_relative_w[:, idxs] - command.robot_body_pos_w[:, idxs]), dim=-1
+    )
+    reward = torch.exp(-error.mean(-1) / std**2)
+    # 检查 reward 是否有 NaN/inf
+    assert not torch.isnan(reward).any(), "mimic_right_hand_position_exp reward contains NaN!"
+    assert not torch.isinf(reward).any(), "mimic_right_hand_position_exp reward contains Inf!"
+    return reward
+
+def mimic_right_hand_orientation_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.2) -> torch.Tensor:
+    """
+    右手末端 mimic 姿态奖励，鼓励机器人右手朝向与参考动作一致。
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    right_hand_link_names = [
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+        "right_wrist_yaw_link",
+    ]
+    missing = [name for name in right_hand_link_names if name not in command.cfg.body_names]
+    assert not missing, f"Missing right hand link names in body_names: {missing}"
+    idxs = [command.cfg.body_names.index(name) for name in right_hand_link_names]
+    assert len(idxs) > 0, "No right hand link indexes found!"
+    error = quat_error_magnitude(command.body_quat_relative_w[:, idxs], command.robot_body_quat_w[:, idxs]) ** 2
+    reward = torch.exp(-error.mean(-1) / std**2)
+    assert not torch.isnan(reward).any(), "mimic_right_hand_orientation_exp reward contains NaN!"
+    assert not torch.isinf(reward).any(), "mimic_right_hand_orientation_exp reward contains Inf!"
+    return reward
