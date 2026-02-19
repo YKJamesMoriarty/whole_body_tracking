@@ -516,3 +516,36 @@ def rew_retract_from_target(
     )
     
     return reward
+
+def effector_velocity_towards_target(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    guidance_radius: float = 0.25,
+) -> torch.Tensor:
+    """
+    鼓励末端执行器速度方向朝向目标点
+    只在引导球范围内且奖励生效时给奖励，否则为0
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    reward = torch.zeros(env.num_envs, device=env.device)
+
+    # 末端位置与速度
+    effector_pos_w = command.robot_body_pos_w[:, command.effector_index]
+    effector_vel_w = command.robot_body_lin_vel_w[:, command.effector_index]
+
+    # 目标方向
+    dir_to_target = command.target_pos_w - effector_pos_w
+    dir_to_target = dir_to_target / (torch.norm(dir_to_target, dim=-1, keepdim=True) + 1e-6)
+    vel_norm = effector_vel_w / (torch.norm(effector_vel_w, dim=-1, keepdim=True) + 1e-6)
+
+    # 计算点积（cosθ），归一化到[0,1]
+    dot = torch.sum(vel_norm * dir_to_target, dim=-1)
+    vel_reward = 0.5 * (dot + 1.0)
+
+    # 只在引导球范围内且奖励生效时给奖励
+    current_distance = torch.norm(effector_pos_w - command.target_pos_w, dim=-1)
+    in_guidance_sphere = current_distance < guidance_radius
+    should_reward = in_guidance_sphere & command.task_rewards_enabled
+
+    reward = torch.where(should_reward, vel_reward, torch.zeros_like(vel_reward))
+    return reward
