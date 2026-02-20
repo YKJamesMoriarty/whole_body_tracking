@@ -332,13 +332,13 @@ class RewardsCfg:
     # Mimic 右手末端位置奖励
     mimic_right_hand_pos = RewTerm(
         func=mdp.mimic_right_hand_position_exp,
-        weight=0.5,  # 可根据实验调整
+        weight=0.1,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     # Mimic 右手末端旋转奖励
     mimic_right_hand_ori = RewTerm(
         func=mdp.mimic_right_hand_orientation_exp,
-        weight=2.5,  # 可根据实验调整
+        weight=2.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     """Reward terms for the MDP.
@@ -382,8 +382,8 @@ class RewardsCfg:
         weight=7.0,
         params={
             "command_name": "motion",
-            "guidance_radius": 0.25,  # 引导球半径
-            "scale": 10.0,  # 每接近 1cm 奖励 0.1
+            "guidance_radius": 0.4,  # 引导球半径
+            "scale": 20.0,  # 每接近 1cm 奖励 0.1
         },
     )
     
@@ -399,7 +399,7 @@ class RewardsCfg:
         weight=3.0,  # 可调整
         params={
             "command_name": "motion",
-            "guidance_radius": 0.25,
+            "guidance_radius": 0.4,
         },
     )
     
@@ -430,7 +430,7 @@ class RewardsCfg:
         weight=5.0,  # 与 effector_target_near 相同
         params={
             "command_name": "motion",
-            "guidance_radius": 0.25,
+            "guidance_radius": 0.4,
             "grace_period": 0.2,
             "scale": 10.0,  # 与 Near 相同
         },

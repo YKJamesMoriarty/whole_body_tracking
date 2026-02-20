@@ -1159,7 +1159,7 @@ class MotionCommandCfg(CommandTermCfg):
     )
     
     # 引导大球半径 (固定值，用于可视化奖励生效范围)
-    guidance_sphere_radius: float = 0.25
+    guidance_sphere_radius: float = 0.4
     
     # =========================================================================
     # Stage 2: Hit 检测配置
