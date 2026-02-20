@@ -1175,7 +1175,7 @@ class MotionCommandCfg(CommandTermCfg):
     # - 这 1 秒内任务奖励失效，只有 Mimic 奖励
     # - 鼓励机器人跟随参考动作收手
     # - 1 秒后重采样目标位置，任务奖励重新生效
-    hit_resample_delay: float = 1.6
+    hit_resample_delay: float = 1.8
     
     # 攻击肢体名称
     effector_body_name: str = "right_wrist_yaw_link"
