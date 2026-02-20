@@ -550,7 +550,8 @@ def effector_velocity_towards_target(
     reward = torch.where(should_reward, vel_reward, torch.zeros_like(vel_reward))
     return reward
 # =================================================
-# 对末端执行器的跟踪增强奖励
+# 对末端执行器的link跟踪增强奖励
+# =============================================================================
 def mimic_right_hand_position_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
     """
     右手末端 mimic 位置奖励，鼓励机器人右手靠近参考动作的右手位置。
@@ -593,4 +594,42 @@ def mimic_right_hand_orientation_exp(env: ManagerBasedRLEnv, command_name: str, 
     reward = torch.exp(-error.mean(-1) / std**2)
     assert not torch.isnan(reward).any(), "mimic_right_hand_orientation_exp reward contains NaN!"
     assert not torch.isinf(reward).any(), "mimic_right_hand_orientation_exp reward contains Inf!"
+    return reward
+
+# =============================================================================
+# 右手关键关节 DOF mimic 奖励
+# =============================================================================
+
+def mimic_right_elbow_dof_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
+    """
+    Mimic 右肘关节 DOF 奖励：鼓励机器人肘关节角度跟随参考动作。
+    - 只约束 right_elbow_joint 的关节角度（弧度）
+    - 指数型奖励：reward = exp(-angle_error^2 / std^2)
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    # 获取机器人关节名索引
+    joint_names = command.robot.data.joint_names
+    #print("[DEBUG] robot joint_names:", joint_names)
+    idx = joint_names.index("right_elbow_joint")
+    # 获取参考动作和机器人当前肘关节角度
+    ref_angle = command.joint_pos[:, idx]  # (num_envs,)
+    robot_angle = command.robot_joint_pos[:, idx]  # (num_envs,)
+    # 计算角度误差
+    error = torch.square(ref_angle - robot_angle)
+    reward = torch.exp(-error / std**2)
+    return reward
+
+def mimic_right_shoulder_roll_dof_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
+    """
+    Mimic 右肩外展关节 DOF 奖励：鼓励机器人肩膀外展角度跟随参考动作。
+    - 只约束 right_shoulder_roll_joint 的关节角度（弧度）
+    - 指数型奖励：reward = exp(-angle_error^2 / std^2)
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    joint_names = command.robot.data.joint_names
+    idx = joint_names.index("right_shoulder_roll_joint")
+    ref_angle = command.joint_pos[:, idx]  # (num_envs,)
+    robot_angle = command.robot_joint_pos[:, idx]  # (num_envs,)
+    error = torch.square(ref_angle - robot_angle)
+    reward = torch.exp(-error / std**2)
     return reward
