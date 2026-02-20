@@ -332,14 +332,14 @@ class RewardsCfg:
     # Mimic 右手末端位置奖励
     mimic_right_hand_pos = RewTerm(
         func=mdp.mimic_right_hand_position_exp,
-        weight=1.0,  # 可根据实验调整
+        weight=0.5,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     # Mimic 右手末端旋转奖励
     mimic_right_hand_ori = RewTerm(
         func=mdp.mimic_right_hand_orientation_exp,
-        weight=1.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.4},
+        weight=2.5,  # 可根据实验调整
+        params={"command_name": "motion", "std": 0.3},
     )
     """Reward terms for the MDP.
     
@@ -362,7 +362,7 @@ class RewardsCfg:
     # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=30.0,
+        weight=50.0,
         params={"command_name": "motion"},
     )
     
@@ -379,7 +379,7 @@ class RewardsCfg:
     # - 设为 3.0 让 Near 奖励有足够吸引力，鼓励机器人主动进攻
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=2.0,
+        weight=3.5,
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,  # 引导球半径
@@ -396,7 +396,7 @@ class RewardsCfg:
 
     effector_velocity_towards_target = RewTerm(
         func=mdp.effector_velocity_towards_target,
-        weight=5.0,  # 可调整
+        weight=3.0,  # 可调整
         params={
             "command_name": "motion",
             "guidance_radius": 0.25,
@@ -443,7 +443,7 @@ class RewardsCfg:
     # [姿态] 惩罚身体过度倾斜
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=1.0,  # 权重为正，函数返回负值
+        weight=10.0,  # 权重为正，函数返回负值
         params={
             "command_name": "motion",
             "tilt_threshold": 0.5,  # 约30度
@@ -461,7 +461,7 @@ class RewardsCfg:
 
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=0.5,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
+        weight=3.0,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
         params={"command_name": "motion", "std": 0.3},
     )
     motion_global_anchor_ori = RewTerm(
@@ -471,17 +471,17 @@ class RewardsCfg:
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=0.7,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=1.2,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=1.0,  # Stage 2: 保留速度约束
+        weight=0.8,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
