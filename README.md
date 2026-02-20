@@ -376,3 +376,37 @@ Unitree G1 机器人特定配置:
 | `upload_npz.py` | 手动上传 NPZ 到 WandB Registry |
 | `rsl_rl/train.py` | 训练脚本，支持 Stage 1/2 训练 |
 | `rsl_rl/play.py` | 策略评估与可视化 |
+
+## Unitree G1 29 DOF Joint Names
+
+以下为本项目使用的 Unitree G1 机器人 29 个关节自由度（DOF）名称：
+
+1. left_hip_pitch_joint
+2. right_hip_pitch_joint
+3. waist_yaw_joint
+4. left_hip_roll_joint
+5. right_hip_roll_joint
+6. waist_roll_joint
+7. left_hip_yaw_joint
+8. right_hip_yaw_joint
+9. waist_pitch_joint
+10. left_knee_joint
+11. right_knee_joint
+12. left_shoulder_pitch_joint
+13. right_shoulder_pitch_joint
+14. left_ankle_pitch_joint
+15. right_ankle_pitch_joint
+16. left_shoulder_roll_joint
+17. right_shoulder_roll_joint
+18. left_ankle_roll_joint
+19. right_ankle_roll_joint
+20. left_shoulder_yaw_joint
+21. right_shoulder_yaw_joint
+22. left_elbow_joint
+23. right_elbow_joint
+24. left_wrist_roll_joint
+25. right_wrist_roll_joint
+26. left_wrist_pitch_joint
+27. right_wrist_pitch_joint
+28. left_wrist_yaw_joint
+29. right_wrist_yaw_joint
