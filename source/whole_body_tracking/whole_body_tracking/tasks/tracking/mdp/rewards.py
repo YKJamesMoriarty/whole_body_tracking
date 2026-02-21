@@ -333,7 +333,7 @@ def effector_face_target(
 def posture_unstable(
     env: ManagerBasedRLEnv,
     command_name: str,
-    tilt_threshold: float = 0.5,  # 约 30 度
+    tilt_threshold: float = 0.060,  # agent身体与机器人倾斜程度相差20度时开始惩罚；
 ) -> torch.Tensor:
     """
     [姿态惩罚] 惩罚身体过度倾斜

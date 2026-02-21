@@ -66,8 +66,8 @@ def bad_motion_body_pos_z_only(
 def robot_falling(
     env: ManagerBasedRLEnv, 
     asset_cfg: SceneEntityCfg, 
-    height_threshold: float = 0.3,
-    tilt_threshold: float = 0.7,
+    height_threshold: float = 0.2,
+    tilt_threshold: float = 0.643,# 倾斜超过 50 度死亡 (cos(50°)≈0.643)
 ) -> torch.Tensor:
     """
     [Stage 2 专用] 机器人摔倒检测
