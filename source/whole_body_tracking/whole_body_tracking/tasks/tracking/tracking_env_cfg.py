@@ -392,7 +392,7 @@ class RewardsCfg:
     # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=20.0,
+        weight=25.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
@@ -456,7 +456,7 @@ class RewardsCfg:
     # [姿态] 惩罚身体过度倾斜
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=100.0,  # 权重为正，函数返回负值
+        weight=150.0,  # 权重为正，函数返回负值
         params={
             "command_name": "motion",
             "tilt_threshold": 0.034,  # 约15度
@@ -555,7 +555,7 @@ class TerminationsCfg:
         func=mdp.robot_falling,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "height_threshold": 0.3,   # 骨盆最低高度 (米)
+            "height_threshold": 0.25,   # 骨盆最低高度 (米)
             "tilt_threshold": 0.57,    # 倾斜余弦阈值 (约55度，cos(55°)≈0.574)
         },
     )
