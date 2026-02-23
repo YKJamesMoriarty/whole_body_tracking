@@ -330,17 +330,17 @@ class RewardsCfg:
     # Stage 2  强化末端执行器（右手）的奖励
     # =========================================================================
     # Mimic 右手末端位置奖励
-    mimic_right_hand_pos = RewTerm(
-        func=mdp.mimic_right_hand_position_exp,
-        weight=0.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
-    )
+    # mimic_right_hand_pos = RewTerm(
+    #     func=mdp.mimic_right_hand_position_exp,
+    #     weight=0.0,  # 可根据实验调整
+    #     params={"command_name": "motion", "std": 0.3},
+    # )
     # Mimic 右手末端旋转奖励
-    mimic_right_hand_ori = RewTerm(
-        func=mdp.mimic_right_hand_orientation_exp,
-        weight=0.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
-    )
+    # mimic_right_hand_ori = RewTerm(
+    #     func=mdp.mimic_right_hand_orientation_exp,
+    #     weight=0.0,  # 可根据实验调整
+    #     params={"command_name": "motion", "std": 0.3},
+    # )
     # Mimic 右肘关节 DOF 奖励
     mimic_right_elbow_dof = RewTerm(
         func=mdp.mimic_right_elbow_dof_exp,
@@ -374,7 +374,7 @@ class RewardsCfg:
     # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=40.0,
+        weight=25.0,
         params={"command_name": "motion"},
     )
     
@@ -389,9 +389,10 @@ class RewardsCfg:
     # - Mimic 奖励约 0.5~0.9 * 6项 ≈ 3~4 每 step
     # - Near 累计奖励 = 0.25m * 10.0 * 3.0 = 7.5 (整个进攻过程)
     # - 设为 3.0 让 Near 奖励有足够吸引力，鼓励机器人主动进攻
+    # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=15.0,
+        weight=20.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
@@ -402,7 +403,7 @@ class RewardsCfg:
     # [战术] 躯干朝向目标 - 鼓励正确的攻击姿态
     effector_face_target = RewTerm(
         func=mdp.effector_face_target,
-        weight=0.0,
+        weight=1.0,
         params={"command_name": "motion"},
     )
 
@@ -426,27 +427,27 @@ class RewardsCfg:
     
     # [收手惩罚-小球] 手停留在目标小球内的惩罚
     # Hit 后 0.2s 开始，如果手还在小球内就惩罚
-    pen_linger_in_hit_sphere = RewTerm(
-        func=mdp.pen_linger_in_hit_sphere,
-        weight=0.0,  # 权重为正，函数返回负值
-        params={
-            "command_name": "motion",
-            "grace_period": 0.2,
-        },
-    )
+    # pen_linger_in_hit_sphere = RewTerm(
+    #     func=mdp.pen_linger_in_hit_sphere,
+    #     weight=0.0,  # 权重为正，函数返回负值
+    #     params={
+    #         "command_name": "motion",
+    #         "grace_period": 0.2,
+    #     },
+    # )
     
     # [收手奖励-大球] 手离开目标的进展奖励 (与 Near 对称)
     # 权重与 Near 相同，形成对称的进攻-收手周期
-    rew_retract_from_target = RewTerm(
-        func=mdp.rew_retract_from_target,
-        weight=0.0,  # 与 effector_target_near 相同
-        params={
-            "command_name": "motion",
-            "guidance_radius": 0.4,
-            "grace_period": 0.2,
-            "scale": 10.0,  # 与 Near 相同
-        },
-    )
+    # rew_retract_from_target = RewTerm(
+    #     func=mdp.rew_retract_from_target,
+    #     weight=0.0,  # 与 effector_target_near 相同
+    #     params={
+    #         "command_name": "motion",
+    #         "guidance_radius": 0.4,
+    #         "grace_period": 0.2,
+    #         "scale": 10.0,  # 与 Near 相同
+    #     },
+    # )
     
     # =========================================================================
     # Stage 2 惩罚项 (姿态稳定性)
@@ -455,10 +456,10 @@ class RewardsCfg:
     # [姿态] 惩罚身体过度倾斜
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=30.0,  # 权重为正，函数返回负值
+        weight=100.0,  # 权重为正，函数返回负值
         params={
             "command_name": "motion",
-            "tilt_threshold": 0.060,  # 约20度
+            "tilt_threshold": 0.034,  # 约15度
         },
     )
     
