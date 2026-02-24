@@ -341,6 +341,7 @@ class RewardsCfg:
     #     weight=0.0,  # 可根据实验调整
     #     params={"command_name": "motion", "std": 0.3},
     # )
+    
     # Mimic 右肘关节 DOF 奖励
     mimic_right_elbow_dof = RewTerm(
         func=mdp.mimic_right_elbow_dof_exp,
@@ -374,7 +375,7 @@ class RewardsCfg:
     # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=25.0,
+        weight=15.0,
         params={"command_name": "motion"},
     )
     
@@ -392,7 +393,7 @@ class RewardsCfg:
     # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=25.0,
+        weight=14.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
@@ -409,7 +410,7 @@ class RewardsCfg:
 
     effector_velocity_towards_target = RewTerm(
         func=mdp.effector_velocity_towards_target,
-        weight=3.0,  # 可调整
+        weight=2.0,  # 可调整
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,
@@ -456,10 +457,10 @@ class RewardsCfg:
     # [姿态] 惩罚身体过度倾斜
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=150.0,  # 权重为正，函数返回负值
+        weight=2500.0,  # 权重为正，函数返回负值
         params={
             "command_name": "motion",
-            "tilt_threshold": 0.034,  # 约15度
+            "tilt_threshold": 0.0097,  # 约8度
         },
     )
     
@@ -482,31 +483,43 @@ class RewardsCfg:
         weight=0.5,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
-    motion_body_pos = RewTerm(
-        func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+    # motion_body_pos = RewTerm(
+    #     func=mdp.motion_relative_body_position_error_exp,
+    #     weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+    #     params={"command_name": "motion", "std": 0.3},
+    # )
+    # motion_body_ori = RewTerm(
+    #     func=mdp.motion_relative_body_orientation_error_exp,
+    #     weight=0.8,  # Stage 2: 保持关节朝向 (必须 > 0!)
+    #     params={"command_name": "motion", "std": 0.4},
+    # )
+    # 除去右手以外其他11个身体部分link的mimic
+    mimic_non_right_hand_body_pos = RewTerm(
+        func=mdp.mimic_non_right_hand_body_position_error_exp,
+        weight=5.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
-    motion_body_ori = RewTerm(
-        func=mdp.motion_relative_body_orientation_error_exp,
-        weight=0.8,  # Stage 2: 保持关节朝向 (必须 > 0!)
+    # Mimic 非右手身体部分姿态奖励
+    mimic_non_right_hand_body_ori = RewTerm(
+        func=mdp.mimic_non_right_hand_body_orientation_error_exp,
+        weight=5.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=0.7,  # Stage 2: 保留速度约束
+        weight=1.0,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=0.7,  # Stage 2: 保留角速度约束
+        weight=1.0,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
     
     # =========================================================================
     # 保持不变的正则化惩罚
     # =========================================================================
-    
+    # 某些时候会出现极大负数值。
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     
     joint_limit = RewTerm(
