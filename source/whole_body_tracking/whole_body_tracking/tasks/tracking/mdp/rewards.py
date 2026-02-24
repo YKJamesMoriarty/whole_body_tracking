@@ -333,7 +333,7 @@ def effector_face_target(
 def posture_unstable(
     env: ManagerBasedRLEnv,
     command_name: str,
-    tilt_threshold: float = 0.034,  # agent身体与机器人倾斜程度相差15度时开始惩罚；
+    tilt_threshold: float = 0.0097,  # agent身体与机器人倾斜程度相差8度时开始惩罚；
 ) -> torch.Tensor:
     """
     [姿态惩罚] 惩罚身体过度倾斜
@@ -633,3 +633,47 @@ def mimic_right_shoulder_roll_dof_exp(env: ManagerBasedRLEnv, command_name: str,
     error = torch.square(ref_angle - robot_angle)
     reward = torch.exp(-error / std**2)
     return reward
+
+# =============================================================================
+# mimic 除右手以外的身体部分的奖励函数
+# =============================================================================
+def mimic_non_right_hand_body_position_error_exp(
+    env: "ManagerBasedRLEnv", command_name: str, std: float, right_hand_names: list[str] = None
+) -> torch.Tensor:
+    """
+    mimic 除右手以外所有 link 的位置奖励
+    right_hand_names: 右手相关 link 名称列表（如["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]）
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    if right_hand_names is None:
+        right_hand_names = ["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]
+    # Debug: print all link names (only once per process)
+    # if not hasattr(mimic_non_right_hand_body_position_error_exp, "_printed_link_names"):
+    #     print("[DEBUG-1] All link names:", command.cfg.body_names)
+    #     mimic_non_right_hand_body_position_error_exp._printed_link_names = True
+    body_names = [name for name in command.cfg.body_names if name not in right_hand_names]
+    # 探针
+    # print(f"[DEBUG-2] 过滤后剩下的 body_names: {body_names}")
+    body_indexes = _get_body_indexes(command, body_names)
+    error = torch.sum(
+        torch.square(command.body_pos_relative_w[:, body_indexes] - command.robot_body_pos_w[:, body_indexes]), dim=-1
+    )
+    return torch.exp(-error.mean(-1) / std**2)
+
+def mimic_non_right_hand_body_orientation_error_exp(
+    env: "ManagerBasedRLEnv", command_name: str, std: float, right_hand_names: list[str] = None
+) -> torch.Tensor:
+    """
+    mimic 除右手以外所有 link 的姿态奖励
+    right_hand_names: 右手相关 link 名称列表
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    if right_hand_names is None:
+        right_hand_names = ["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]
+    body_names = [name for name in command.cfg.body_names if name not in right_hand_names]
+    body_indexes = _get_body_indexes(command, body_names)
+    error = (
+        quat_error_magnitude(command.body_quat_relative_w[:, body_indexes], command.robot_body_quat_w[:, body_indexes])
+        ** 2
+    )
+    return torch.exp(-error.mean(-1) / std**2)
