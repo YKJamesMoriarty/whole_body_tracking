@@ -631,29 +631,21 @@ class MotionCommand(CommandTerm):
         self.metrics["error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
         
         # =====================================================================
-        # Stage 2: 手部速度监控 (方法2 - 记录到 wandb)
-        # 用于分析训练过程中手部速度的变化趋势
+        # Stage 2: 攻击肢体速度监控 (方法2 - 记录到 wandb)
+        # 用于分析训练过程中攻击肢体速度的变化趋势
         # =====================================================================
-        
-        # 获取右手 (right_wrist_yaw_link) 的速度
-        right_wrist_idx = self.cfg.body_names.index("right_wrist_yaw_link")
-        right_hand_lin_vel_w = self.robot_body_lin_vel_w[:, right_wrist_idx]  # (num_envs, 3)
-        right_hand_speed = torch.norm(right_hand_lin_vel_w, dim=-1)  # (num_envs,) 标量速度 m/s
-        
-        # 获取左手 (left_wrist_yaw_link) 的速度
-        left_wrist_idx = self.cfg.body_names.index("left_wrist_yaw_link")
-        left_hand_lin_vel_w = self.robot_body_lin_vel_w[:, left_wrist_idx]  # (num_envs, 3)
-        left_hand_speed = torch.norm(left_hand_lin_vel_w, dim=-1)  # (num_envs,) 标量速度 m/s
-        
+
+        # 使用 effector_index 自动适配不同技能 (右手/右脚等)
+        effector_lin_vel_w = self.robot_body_lin_vel_w[:, self.effector_index]  # (num_envs, 3)
+        effector_speed = torch.norm(effector_lin_vel_w, dim=-1)  # (num_envs,) 标量速度 m/s
+
         # 记录到 metrics (会自动上传到 wandb)
-        self.metrics["right_hand_speed"] = right_hand_speed  # 右手速度 (m/s)
-        self.metrics["left_hand_speed"] = left_hand_speed    # 左手速度 (m/s)
-        self.metrics["max_hand_speed"] = torch.max(right_hand_speed, left_hand_speed)  # 双手最大速度
-        
-        # 计算手部到目标的距离 (用于分析 hit 奖励的触发条件)
-        right_hand_pos_w = self.robot_body_pos_w[:, right_wrist_idx]  # (num_envs, 3)
-        dist_to_target = torch.norm(right_hand_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
-        self.metrics["right_hand_to_target_dist"] = dist_to_target  # 右手到目标的距离 (m)
+        self.metrics["effector_speed"] = effector_speed  # 攻击肢体速度 (m/s)
+
+        # 计算攻击肢体到目标的距离 (用于分析 hit 奖励的触发条件)
+        effector_pos_w = self.robot_body_pos_w[:, self.effector_index]  # (num_envs, 3)
+        dist_to_target = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
+        self.metrics["right_hand_to_target_dist"] = dist_to_target  # 攻击肢体到目标的距离 (m)
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
         """
@@ -863,17 +855,13 @@ class MotionCommand(CommandTerm):
         # 帮助设计奖励函数：了解正常出拳时手部能达到的速度范围
         # 设置完奖励函数后可以注释掉这段代码
         # =====================================================================
-        right_wrist_idx = self.cfg.body_names.index("right_wrist_yaw_link")
-        left_wrist_idx = self.cfg.body_names.index("left_wrist_yaw_link")
-        
-        # 获取手部速度 (只取第一个环境的数据用于显示)
-        right_hand_vel = self.robot_body_lin_vel_w[0, right_wrist_idx]  # (3,)
-        left_hand_vel = self.robot_body_lin_vel_w[0, left_wrist_idx]    # (3,)
-        right_speed = torch.norm(right_hand_vel).item()  # 标量 m/s
-        left_speed = torch.norm(left_hand_vel).item()    # 标量 m/s
-        
-        # 获取右手到目标的距离
-        right_hand_pos = self.robot_body_pos_w[0, right_wrist_idx]  # (3,)
+        # 使用 effector_index 自动适配当前技能的攻击肢体
+        effector_vel = self.robot_body_lin_vel_w[0, self.effector_index]  # (3,)
+        right_speed = torch.norm(effector_vel).item()  # 标量 m/s
+        left_speed = 0.0  # 占位，保持日志格式兼容
+
+        # 获取攻击肢体到目标的距离
+        right_hand_pos = self.robot_body_pos_w[0, self.effector_index]  # (3,)
         dist_to_target = torch.norm(right_hand_pos - self.target_pos_w[0]).item()  # m
         
         # 将手部速度写入日志文件 (避免被 Isaac Lab 警告淹没)
@@ -1107,9 +1095,9 @@ class MotionCommandCfg(CommandTermCfg):
     #   y     : 左右偏移 (m, 正=左, 负=右)
     #   z > 0 : 骨盆以上高度 (m)
     # =========================================================================
-    # 默认: 前方 62.5cm, 居中, 骨盆以上 20 cm
-    # 可根据参考动作中拳头实际到达的高度调整 z 值(z=0.2正好是cross参考动作中拳头高度）
-    fixed_target_local_pos: tuple = (0.625, 0.0, 0.20)
+    # 右脚高位鞭腿: 前方 50cm, 居中, 骨盆以上 10 cm (对应高踢时脚踝高度)
+    # 注意: 需根据 roundhouse_right_fast_high 参考动作中脚踝实际到达高度微调 z 值
+    fixed_target_local_pos: tuple = (0.5, 0.0, 0.1)
 
     # [已注释] 课程学习采样范围配置
     # target_sampling_range: dict[str, tuple[float, float]] = field(
@@ -1139,8 +1127,8 @@ class MotionCommandCfg(CommandTermCfg):
     # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
     spawn_target_delay: float = 1.0
 
-    # 攻击肢体名称
-    effector_body_name: str = "right_wrist_yaw_link"
+    # 攻击肢体名称 (右脚高位鞭腿: right_ankle_roll_link)
+    effector_body_name: str = "right_ankle_roll_link"
 
     # [已注释] 课程学习配置
     # curriculum_level_step: float = 0.25
