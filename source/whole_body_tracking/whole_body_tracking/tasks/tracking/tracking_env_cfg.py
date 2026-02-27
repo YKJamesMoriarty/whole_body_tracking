@@ -382,7 +382,7 @@ class RewardsCfg:
     # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=19.0,
+        weight=18.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
@@ -452,12 +452,12 @@ class RewardsCfg:
     #anchor link的mini
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=5.0,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
+        weight=7.0,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
         params={"command_name": "motion", "std": 0.25},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.5,  # Stage 2: 保留朝向约束
+        weight=2.5,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
     # 全身link的mimic
