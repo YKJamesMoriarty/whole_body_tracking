@@ -384,7 +384,7 @@ class RewardsCfg:
     # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=19.0,
+        weight=18.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
@@ -395,13 +395,13 @@ class RewardsCfg:
     # [战术] 躯干（pelvis）水平朝向目标 - 拳/腿任务均适用
     body_face_target = RewTerm(
         func=mdp.body_face_target,
-        weight=1.0,
+        weight=0.0,
         params={"command_name": "motion"},
     )
 
     effector_velocity_towards_target = RewTerm(
         func=mdp.effector_velocity_towards_target,
-        weight=2.0,  # 可调整
+        weight=0.5,  # 可调整
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,
