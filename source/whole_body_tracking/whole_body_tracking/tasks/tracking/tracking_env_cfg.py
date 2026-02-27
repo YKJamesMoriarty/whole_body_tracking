@@ -161,7 +161,8 @@ class ObservationsCfg:
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
             params={"command_name": "motion"},
-            noise=Unoise(n_min=-0.1, n_max=0.1)
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            clip=(-15.0, 15.0),  # spawn 延迟期间目标在地下时限制极端值
         )
         
         # (2) 目标相对速度: 3 维
@@ -225,8 +226,8 @@ class ObservationsCfg:
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         motion_anchor_pos_b = ObsTerm(func=mdp.motion_anchor_pos_b, params={"command_name": "motion"})
         motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"})
-        body_pos = ObsTerm(func=mdp.robot_body_pos_b, params={"command_name": "motion"})
-        body_ori = ObsTerm(func=mdp.robot_body_ori_b, params={"command_name": "motion"})
+        body_pos = ObsTerm(func=mdp.robot_body_pos_b, params={"command_name": "motion"}, clip=(-10.0, 10.0))
+        body_ori = ObsTerm(func=mdp.robot_body_ori_b, params={"command_name": "motion"}, clip=(-1.0, 1.0))
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
@@ -241,7 +242,8 @@ class ObservationsCfg:
         # (1) 目标相对位置: 3 维
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
-            params={"command_name": "motion"}
+            params={"command_name": "motion"},
+            clip=(-15.0, 15.0),
         )
         
         # (2) 目标相对速度: 3 维
