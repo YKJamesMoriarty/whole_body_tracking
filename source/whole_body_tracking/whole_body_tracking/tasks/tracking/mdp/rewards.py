@@ -641,11 +641,15 @@ def mimic_non_right_hand_body_position_error_exp(
     env: "ManagerBasedRLEnv", command_name: str, std: float, right_hand_names: list[str] = None
 ) -> torch.Tensor:
     """
-    mimic 除右手以外所有 link 的位置奖励
-    right_hand_names: 右手相关 link 名称列表（如["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]）
+    mimic 除攻击肢体以外所有 link 的位置奖励
+    right_hand_names: 需要从 mimic 中排除的 link 名称列表
+      - 右手出拳: ["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]
+      - 右脚鞭腿: ["right_hip_roll_link", "right_knee_link", "right_ankle_roll_link"]
+    由调用方 (tracking_env_cfg.py) 通过 params 传入，不使用默认值
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     if right_hand_names is None:
+        # 兜底默认值 (仅当调用方未传入时生效，应在 cfg 中显式指定)
         right_hand_names = ["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]
     # Debug: print all link names (only once per process)
     # if not hasattr(mimic_non_right_hand_body_position_error_exp, "_printed_link_names"):
@@ -664,11 +668,15 @@ def mimic_non_right_hand_body_orientation_error_exp(
     env: "ManagerBasedRLEnv", command_name: str, std: float, right_hand_names: list[str] = None
 ) -> torch.Tensor:
     """
-    mimic 除右手以外所有 link 的姿态奖励
-    right_hand_names: 右手相关 link 名称列表
+    mimic 除攻击肢体以外所有 link 的姿态奖励
+    right_hand_names: 需要从 mimic 中排除的 link 名称列表
+      - 右手出拳: ["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]
+      - 右脚鞭腿: ["right_hip_roll_link", "right_knee_link", "right_ankle_roll_link"]
+    由调用方 (tracking_env_cfg.py) 通过 params 传入，不使用默认值
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     if right_hand_names is None:
+        # 兜底默认值 (仅当调用方未传入时生效，应在 cfg 中显式指定)
         right_hand_names = ["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]
     body_names = [name for name in command.cfg.body_names if name not in right_hand_names]
     body_indexes = _get_body_indexes(command, body_names)
