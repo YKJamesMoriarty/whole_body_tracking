@@ -123,11 +123,11 @@ class MotionCommand(CommandTerm):
         # 
         # Stage 2 新增 metrics:
         # - resample_count: 记录目标重采样次数 (用于监控)
-        # - right_hand_to_target_dist: 右手到目标距离 (核心监控指标)
-        # - effector_speed: 攻击肢体速度 (监控出拳速度)
+        # - effector_to_target_dist: 攻击肢体到目标距离 (核心监控指标)
+        # - effector_speed: 攻击肢体速度 (监控速度)
         # =====================================================================
         self.metrics["resample_count"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["right_hand_to_target_dist"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["effector_to_target_dist"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["effector_speed"] = torch.zeros(self.num_envs, device=self.device)
 
         # =====================================================================
@@ -170,7 +170,7 @@ class MotionCommand(CommandTerm):
         # Hit 距离阈值 (米) - 只用距离判断，不用速度
         self.hit_distance_threshold = self.cfg.hit_distance_threshold
         
-        # 攻击肢体索引 (右手手腕)
+        # 攻击肢体名称和索引 (由 cfg.effector_body_name 决定，如 right_ankle_roll_link)
         self.effector_body_name = self.cfg.effector_body_name
         self.effector_index = self.cfg.body_names.index(self.effector_body_name)
         
@@ -645,7 +645,7 @@ class MotionCommand(CommandTerm):
         # 计算攻击肢体到目标的距离 (用于分析 hit 奖励的触发条件)
         effector_pos_w = self.robot_body_pos_w[:, self.effector_index]  # (num_envs, 3)
         dist_to_target = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
-        self.metrics["right_hand_to_target_dist"] = dist_to_target  # 攻击肢体到目标的距离 (m)
+        self.metrics["effector_to_target_dist"] = dist_to_target  # 攻击肢体到目标的距离 (m)
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
         """
@@ -783,7 +783,7 @@ class MotionCommand(CommandTerm):
         distances = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
         speeds = torch.norm(effector_vel_w, dim=-1)  # (num_envs,)
         
-        self.metrics["right_hand_to_target_dist"][:] = distances
+        self.metrics["effector_to_target_dist"][:] = distances
         self.metrics["effector_speed"][:] = speeds
 
     def _set_debug_vis_impl(self, debug_vis: bool):
@@ -861,8 +861,8 @@ class MotionCommand(CommandTerm):
         left_speed = 0.0  # 占位，保持日志格式兼容
 
         # 获取攻击肢体到目标的距离
-        right_hand_pos = self.robot_body_pos_w[0, self.effector_index]  # (3,)
-        dist_to_target = torch.norm(right_hand_pos - self.target_pos_w[0]).item()  # m
+        effector_pos = self.robot_body_pos_w[0, self.effector_index]  # (3,)
+        dist_to_target = torch.norm(effector_pos - self.target_pos_w[0]).item()  # m
         
         # 将手部速度写入日志文件 (避免被 Isaac Lab 警告淹没)
         # 使用方法: 在另一个终端运行 tail -f logs/hand_speed.log 实时查看
