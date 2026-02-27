@@ -354,6 +354,13 @@ class MotionCommand(CommandTerm):
         if len(env_ids) == 0:
             return
 
+        # spawn_target_delay=0 时直接放置目标，不需要计时器
+        if self._spawn_target_delay <= 0:
+            self._resample_target_positions(env_ids)
+            self.hit_resample_timer[env_ids] = 0.0
+            self._spawn_target_timer[env_ids] = 0.0
+            return
+
         # 将目标移到地下 (与 hit 后冷静期一致的策略)
         underground_pos = torch.zeros(len(env_ids), 3, device=self.device)
         underground_pos[:, 2] = -10.0
@@ -1109,7 +1116,9 @@ class MotionCommandCfg(CommandTermCfg):
     # =========================================================================
     # 默认: 前方 62.5cm, 居中, 骨盆以上 20 cm
     # 可根据参考动作中拳头实际到达的高度调整 z 值(z=0.2正好是cross参考动作中拳头高度）
-    fixed_target_local_pos: tuple = (0.625, 0.0, 0.20)
+    # cross的合适目标为(0.625, 0.0, 0.20)
+    # swing的合适目标为(0.565, 0.0, 0.35)
+    fixed_target_local_pos: tuple = (0.565, 0.0, 0.35)
 
     # [已注释] 课程学习采样范围配置
     # target_sampling_range: dict[str, tuple[float, float]] = field(
@@ -1137,7 +1146,7 @@ class MotionCommandCfg(CommandTermCfg):
     hit_resample_delay: float = 1.8
 
     # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
-    spawn_target_delay: float = 1.0
+    spawn_target_delay: float = 0.0
 
     # 攻击肢体名称
     effector_body_name: str = "right_wrist_yaw_link"
