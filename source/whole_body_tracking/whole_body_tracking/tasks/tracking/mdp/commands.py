@@ -5,7 +5,7 @@ import numpy as np
 import os
 import torch
 from collections.abc import Sequence
-from dataclasses import MISSING, field
+from dataclasses import MISSING
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation
@@ -36,14 +36,14 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# 目标小球采样区域配置 (相对于机器人 Root/Pelvis 的局部坐标系)
-# 基于 Unitree G1 机器人的尺寸设计，适合拳击攻击动作
+# [已注释] 目标小球采样区域配置 (课程学习使用，已取消)
+# 改为固定目标点，在 MotionCommandCfg.fixed_target_local_pos 中配置
 # =============================================================================
-DEFAULT_TARGET_SAMPLING_RANGE = {
-    "x": (0.6, 0.65),   # 前方 60-65cm，有效攻击距离
-    "y": (-0.4, 0.4),    # 左右 ±40cm，覆盖左右出拳
-    "z": (0.25, 0.5),    # 高度 25-50cm（胸部到下巴高度）
-}
+# DEFAULT_TARGET_SAMPLING_RANGE = {
+#     "x": (0.6, 0.65),   # 前方 60-65cm，有效攻击距离
+#     "y": (-0.4, 0.4),    # 左右 ±40cm，覆盖左右出拳
+#     "z": (0.25, 0.5),    # 高度 25-50cm（胸部到下巴高度）
+# }
 
 
 class MotionLoader:
@@ -153,10 +153,10 @@ class MotionCommand(CommandTerm):
         self._reference_root_pos_w = self.motion.body_pos_w[0, 0].clone()  # (3,) 第一帧的 pelvis 位置
         self._reference_root_quat_w = self.motion.body_quat_w[0, 0].clone()  # (4,) 第一帧的 pelvis 朝向
         
-        # 采样范围配置 (相对于机器人 Root 的局部坐标)
-        self._target_sampling_range = self.cfg.target_sampling_range
-        
-        # 引导大球半径 (固定值)
+        # [已注释] 采样范围配置 (课程学习使用，已取消)
+        # self._target_sampling_range = self.cfg.target_sampling_range
+
+        # 引导大球半径 (固定值，用于可视化和奖励)
         self._guidance_sphere_radius = self.cfg.guidance_sphere_radius
         
         # =====================================================================
@@ -239,40 +239,33 @@ class MotionCommand(CommandTerm):
         # 只有比这个距离更远时才给收手奖励
         # Hit 时重置为 0 (因为 Hit 时距离接近 0)
         self.max_distance_from_target = torch.zeros(self.num_envs, device=self.device)
-        
+
         # =====================================================================
-        # Stage 2: 课程学习状态
+        # Episode 初始化延迟: 防止 spawn 不稳定瞬间碰到目标
+        # 每个 episode 开始时，目标先隐藏到地下 1.2s，等物理引擎稳定后再出现
         # =====================================================================
-        
-        # 当前课程难度等级 (0.0 ~ 1.0)
-        # 0.0 = 最简单 (小范围采样，接近中心点)
-        # 1.0 = 最难 (全范围采样)
-        self.curriculum_level = torch.tensor(0.0, device=self.device)
-        
-        # 课程升级所需的 Hit 成功率阈值
-        self.curriculum_hit_rate_threshold = self.cfg.curriculum_hit_rate_threshold
-        
-        # 课程升级的步长
-        self.curriculum_level_step = self.cfg.curriculum_level_step
-        
-        # 滑动窗口大小 (用于计算最近 N step 的 Hit 率)
-        self.curriculum_window_size = self.cfg.curriculum_window_size
-        
-        # 滑动窗口: 记录最近 window_size 个 step 的 Hit 数量
-        # 每个位置存储该 step 所有 env 的 Hit 总数
-        self._hit_history = torch.zeros(self.curriculum_window_size, dtype=torch.long, device=self.device)
-        self._hit_history_idx = 0  # 当前写入位置 (循环写入)
-        self._hit_history_filled = False  # 窗口是否已填满
-        
-        # 初始采样范围 (Level 0) 和最终采样范围 (Level 1)
-        self._init_sampling_range = self.cfg.init_sampling_range
-        self._final_sampling_range = self.cfg.target_sampling_range
-        
-        # Hit 相关的 metrics
+        self._spawn_target_timer = torch.zeros(self.num_envs, device=self.device)
+        self._spawn_target_delay = self.cfg.spawn_target_delay
+
+        # =====================================================================
+        # [已注释] 课程学习状态 (已取消，改为固定目标点训练)
+        # =====================================================================
+        # self.curriculum_level = torch.tensor(0.0, device=self.device)
+        # self.curriculum_hit_rate_threshold = self.cfg.curriculum_hit_rate_threshold
+        # self.curriculum_level_step = self.cfg.curriculum_level_step
+        # self.curriculum_window_size = self.cfg.curriculum_window_size
+        # self._hit_history = torch.zeros(self.curriculum_window_size, dtype=torch.long, device=self.device)
+        # self._hit_history_idx = 0
+        # self._hit_history_filled = False
+        # self._init_sampling_range = self.cfg.init_sampling_range
+        # self._final_sampling_range = self.cfg.target_sampling_range
+
+        # Hit 相关的 metrics (保留用于监控)
         self.metrics["hit_count"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["max_hit_count"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["curriculum_level"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["curriculum_hit_rate"] = torch.zeros(self.num_envs, device=self.device)
+        # [已注释] 课程学习 metrics
+        # self.metrics["curriculum_level"] = torch.zeros(self.num_envs, device=self.device)
+        # self.metrics["curriculum_hit_rate"] = torch.zeros(self.num_envs, device=self.device)
         
         # 初始化目标位置（会在 reset 时被重新采样）
         self._init_target_positions()
@@ -282,91 +275,104 @@ class MotionCommand(CommandTerm):
         # 在采样范围内随机采样目标位置
         self._resample_target_positions(torch.arange(self.num_envs, device=self.device))
     
-    def _get_current_sampling_range(self) -> dict:
-        """
-        根据当前课程等级计算采样范围
-        
-        使用线性插值：
-        range = init_range + curriculum_level * (final_range - init_range)
-        
-        Returns:
-            dict: 当前课程等级对应的采样范围 {"x": (min, max), "y": ..., "z": ...}
-        """
-        level = self.curriculum_level.item()
-        current_range = {}
-        
-        for axis in ["x", "y", "z"]:
-            init_min, init_max = self._init_sampling_range[axis]
-            final_min, final_max = self._final_sampling_range[axis]
-            
-            # 线性插值
-            current_min = init_min + level * (final_min - init_min)
-            current_max = init_max + level * (final_max - init_max)
-            current_range[axis] = (current_min, current_max)
-        
-        return current_range
+    # [已注释] _get_current_sampling_range: 课程学习采样范围计算，已取消
+    # def _get_current_sampling_range(self) -> dict:
+    #     level = self.curriculum_level.item()
+    #     current_range = {}
+    #     for axis in ["x", "y", "z"]:
+    #         init_min, init_max = self._init_sampling_range[axis]
+    #         final_min, final_max = self._final_sampling_range[axis]
+    #         current_min = init_min + level * (final_min - init_min)
+    #         current_max = init_max + level * (final_max - init_max)
+    #         current_range[axis] = (current_min, current_max)
+    #     return current_range
     
     def _resample_target_positions(self, env_ids: torch.Tensor):
         """
-        为指定环境重新采样目标位置
-        
-        采样逻辑:
-        1. 根据当前课程等级计算采样范围
-        2. 在局部坐标系 (相对于参考动作第一帧的 Root) 中采样
-        3. 将局部坐标转换到世界坐标系
-        4. 加上各环境的 origin 偏移
-        
+        为指定环境设置固定目标位置 (已取消课程学习随机采样)
+
+        目标位置由 cfg.fixed_target_local_pos 配置，相对于参考动作第一帧 Root 的局部坐标系。
+        所有 env 使用相同的局部偏移，加上各自的 env_origin 实现独立定位。
+
         Args:
-            env_ids: 需要重新采样的环境索引
+            env_ids: 需要重置目标位置的环境索引
         """
         if len(env_ids) == 0:
             return
-        
+
         num_samples = len(env_ids)
-        
-        # 根据课程等级获取当前采样范围
-        current_range = self._get_current_sampling_range()
-        x_range = current_range["x"]
-        y_range = current_range["y"]
-        z_range = current_range["z"]
-        
-        # 更新内部状态以供可视化使用
-        self._target_sampling_range = current_range
-        
-        # 随机采样 (num_samples, 3)
-        local_target_pos = torch.zeros(num_samples, 3, device=self.device)
-        local_target_pos[:, 0] = sample_uniform(x_range[0], x_range[1], (num_samples,), device=self.device)
-        local_target_pos[:, 1] = sample_uniform(y_range[0], y_range[1], (num_samples,), device=self.device)
-        local_target_pos[:, 2] = sample_uniform(z_range[0], z_range[1], (num_samples,), device=self.device)
-        
+
+        # 固定局部坐标 (相对于参考动作第一帧 Root/Pelvis)
+        fx, fy, fz = self.cfg.fixed_target_local_pos
+        local_target_pos = torch.tensor(
+            [[fx, fy, fz]], dtype=torch.float32, device=self.device
+        ).repeat(num_samples, 1)  # (num_samples, 3)
+
         # 将局部坐标转换到世界坐标系
-        # 使用参考动作第一帧的 Root 朝向进行旋转
         # world_pos = root_pos + quat_apply(root_quat, local_pos)
         world_target_pos = self._reference_root_pos_w + quat_apply(
             self._reference_root_quat_w.unsqueeze(0).repeat(num_samples, 1),
-            local_target_pos
+            local_target_pos,
         )
-        
+
         # 加上各环境的 origin 偏移
         world_target_pos = world_target_pos + self._env.scene.env_origins[env_ids]
-        
+
         # 更新目标位置
         self.target_pos_w[env_ids] = world_target_pos
-        
+
         # 重置被采样环境的任务奖励状态
         self.task_rewards_enabled[env_ids] = True
         self.hit_resample_timer[env_ids] = 0.0
-        
-        # 重置进展奖励状态
-        # min_distance 重置为大值，让新目标可以触发进展奖励
+
+        # 重置进展奖励状态 (min_distance 重置为大值，让新目标可以触发进展奖励)
         self.min_distance_to_target[env_ids] = 10.0
-        
+
         # 重置引导球进入状态
         self.has_entered_guidance_sphere[env_ids] = False
-        
-        # 重置收手阶段状态 (重采样后进入进攻阶段，不需要收手)
+
+        # 重置收手阶段状态
         self.max_distance_from_target[env_ids] = 0.0
-    
+
+    def _delayed_spawn_target(self, env_ids: torch.Tensor):
+        """
+        Episode 重置时调用: 将目标暂时放到地下，启动 spawn 延迟计时器
+
+        机制:
+        - 目标立即移到 z=-10m (地下)，任务奖励禁用
+        - _spawn_target_timer 开始倒计时 (spawn_target_delay 秒)
+        - update_hit_resample_timer() 每步检测计时器是否到期
+        - 到期后调用 _resample_target_positions() 让目标正式出现
+
+        目的:
+        - 避免 episode 初始化时的物理引擎不稳定 (速度随机噪声导致抖动)
+          意外触发 hit 检测，让网络学到不应该学的奖励
+
+        Args:
+            env_ids: 需要处理的环境索引
+        """
+        if len(env_ids) == 0:
+            return
+
+        # 将目标移到地下 (与 hit 后冷静期一致的策略)
+        underground_pos = torch.zeros(len(env_ids), 3, device=self.device)
+        underground_pos[:, 2] = -10.0
+        self.target_pos_w[env_ids] = underground_pos + self._env.scene.env_origins[env_ids]
+
+        # 禁用任务奖励
+        self.task_rewards_enabled[env_ids] = False
+
+        # 清零 hit 冷静期计时器 (新 episode，不继承上个 episode 的冷静期)
+        self.hit_resample_timer[env_ids] = 0.0
+
+        # 重置进展奖励状态
+        self.min_distance_to_target[env_ids] = 10.0
+        self.has_entered_guidance_sphere[env_ids] = False
+        self.max_distance_from_target[env_ids] = 0.0
+
+        # 启动 spawn 延迟计时器
+        self._spawn_target_timer[env_ids] = self._spawn_target_delay
+
     def check_hit(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
         检查是否发生有效 Hit
@@ -453,104 +459,69 @@ class MotionCommand(CommandTerm):
         
         if len(resample_env_ids) > 0:
             self._resample_target_positions(resample_env_ids)
-    
+
+        # =====================================================================
+        # Spawn 延迟计时器: Episode 初始化后等待物理引擎稳定再显示目标
+        # =====================================================================
+        spawn_waiting = self._spawn_target_timer > 0
+
+        # 减少 spawn 计时器
+        self._spawn_target_timer = torch.where(
+            spawn_waiting,
+            self._spawn_target_timer - self.step_dt,
+            self._spawn_target_timer,
+        )
+
+        # 检查哪些环境的 spawn 计时器刚刚到期
+        spawn_just_expired = (self._spawn_target_timer <= 0) & spawn_waiting
+        spawn_env_ids = torch.where(spawn_just_expired)[0]
+
+        if len(spawn_env_ids) > 0:
+            self._resample_target_positions(spawn_env_ids)
+
     def update_curriculum(self, hit_mask: torch.Tensor):
         """
-        更新课程学习状态 (使用滑动窗口统计)
-        
-        滑动窗口机制:
-        ==============
-        - 维护一个大小为 window_size (500) 的循环数组
-        - 每个 step 记录所有 env 的 Hit 总数到当前位置
-        - 位置指针循环前进，新数据自动覆盖最旧的数据
-        - 始终统计最近 500 step 的 Hit 情况
-        
-        Hit 率计算:
-        ===========
-        hit_rate = total_hits / (window_size × num_envs)
-        
-        例如: window_size=500, num_envs=4
-        - 总机会数 = 500 × 4 = 2000
-        - 如果 500 step 内共 Hit 40 次
-        - hit_rate = 40 / 2000 = 2%
-        
-        升级条件:
-        ========
-        1. 滑动窗口已填满 (至少运行了 500 step)
-        2. Hit 成功率 >= threshold (默认 2%)
-        3. 当前未满级
-        
+        [已简化] 课程学习逻辑已取消，仅更新 hit 监控指标
+
+        原课程学习机制 (已注释):
+        - 滑动窗口统计 Hit 率
+        - Hit 率达阈值后自动扩大采样范围
+
         Args:
             hit_mask: (num_envs,) bool, 本次 step 哪些环境发生了 Hit
         """
-        # =====================================================================
-        # 滑动窗口统计: 记录最近 window_size 个 step 的 Hit 情况
-        # =====================================================================
-        
-        # 将本次 step 的 Hit 数量写入滑动窗口
-        hit_count_this_step = hit_mask.sum().long()
-        self._hit_history[self._hit_history_idx] = hit_count_this_step
-        self._hit_history_idx = (self._hit_history_idx + 1) % self.curriculum_window_size
-        
-        # 检查窗口是否已填满 (第一轮循环完成后)
-        if self._hit_history_idx == 0:
-            self._hit_history_filled = True
-        
-        # 计算滑动窗口内的 Hit 成功率
-        # Hit 率 = 窗口内总 Hit 次数 / (窗口大小 * num_envs)
-        if self._hit_history_filled:
-            # 窗口已满，使用完整窗口
-            total_hits = self._hit_history.sum().item()
-            total_opportunities = self.curriculum_window_size * self.num_envs
-        else:
-            # 窗口未满，只使用已填充部分
-            total_hits = self._hit_history[:self._hit_history_idx].sum().item()
-            total_opportunities = self._hit_history_idx * self.num_envs
-        
-        if total_opportunities > 0:
-            current_hit_rate = total_hits / total_opportunities
-        else:
-            current_hit_rate = 0.0
-        
-        # 更新 metrics
-        self.metrics["curriculum_level"][:] = self.curriculum_level.item()
-        self.metrics["curriculum_hit_rate"][:] = current_hit_rate
+        # 更新 hit metrics (用于 WandB 监控)
         self.metrics["hit_count"][:] = hit_mask.float()
-        # 更新 max_hit_count 指标
-        max_val = self.cumulative_hit_count.max().float()
-        self.metrics["max_hit_count"][:] = max_val
-        
+        self.metrics["max_hit_count"][:] = self.cumulative_hit_count.max().float()
+
         # =====================================================================
-        # 课程升级判断
-        # 条件: 滑动窗口已满 且 Hit 率 >= 阈值 且 未到满级
+        # [已注释] 课程学习: 滑动窗口统计 + 升级逻辑
         # =====================================================================
-        if (self._hit_history_filled and 
-            current_hit_rate >= self.curriculum_hit_rate_threshold and
-            self.curriculum_level < 1.0):
-            
-            # 升级!
-            old_level = self.curriculum_level.item()
-            self.curriculum_level = torch.clamp(
-                self.curriculum_level + self.curriculum_level_step, 
-                max=1.0
-            )
-            new_level = self.curriculum_level.item()
-            
-            # 重置滑动窗口 (新难度从零开始统计)
-            self._hit_history.zero_()
-            self._hit_history_idx = 0
-            self._hit_history_filled = False
-            
-            # 打印升级信息
-            print(f"\n{'='*60}")
-            print(f">>> CURRICULUM LEVEL UP! {old_level:.2f} -> {new_level:.2f}")
-            print(f">>> Hit Rate (last {self.curriculum_window_size} steps): {current_hit_rate:.2%}")
-            new_range = self._get_current_sampling_range()
-            print(f">>> New Sampling Range:")
-            print(f">>>   X: [{new_range['x'][0]:.3f}, {new_range['x'][1]:.3f}]")
-            print(f">>>   Y: [{new_range['y'][0]:.3f}, {new_range['y'][1]:.3f}]")
-            print(f">>>   Z: [{new_range['z'][0]:.3f}, {new_range['z'][1]:.3f}]")
-            print(f"{'='*60}\n")
+        # hit_count_this_step = hit_mask.sum().long()
+        # self._hit_history[self._hit_history_idx] = hit_count_this_step
+        # self._hit_history_idx = (self._hit_history_idx + 1) % self.curriculum_window_size
+        # if self._hit_history_idx == 0:
+        #     self._hit_history_filled = True
+        # if self._hit_history_filled:
+        #     total_hits = self._hit_history.sum().item()
+        #     total_opportunities = self.curriculum_window_size * self.num_envs
+        # else:
+        #     total_hits = self._hit_history[:self._hit_history_idx].sum().item()
+        #     total_opportunities = self._hit_history_idx * self.num_envs
+        # current_hit_rate = total_hits / total_opportunities if total_opportunities > 0 else 0.0
+        # self.metrics["curriculum_level"][:] = self.curriculum_level.item()
+        # self.metrics["curriculum_hit_rate"][:] = current_hit_rate
+        # if (self._hit_history_filled and
+        #         current_hit_rate >= self.curriculum_hit_rate_threshold and
+        #         self.curriculum_level < 1.0):
+        #     old_level = self.curriculum_level.item()
+        #     self.curriculum_level = torch.clamp(
+        #         self.curriculum_level + self.curriculum_level_step, max=1.0
+        #     )
+        #     self._hit_history.zero_()
+        #     self._hit_history_idx = 0
+        #     self._hit_history_filled = False
+        #     print(f">>> CURRICULUM LEVEL UP! {old_level:.2f} -> {self.curriculum_level.item():.2f}")
 
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation
@@ -734,18 +705,19 @@ class MotionCommand(CommandTerm):
         if len(env_ids) == 0:
             return
         self._adaptive_sampling(env_ids)
-        
-        # Stage 2: 重新采样目标位置
-        self._resample_target_positions(torch.tensor(env_ids, device=self.device))
-        
+
+        # Stage 2: Episode 重置时使用延迟 spawn (1.2s 后目标才出现)
+        # 避免 spawn 不稳定瞬间意外触发 hit 检测
+        env_ids_tensor = torch.tensor(env_ids, device=self.device, dtype=torch.long)
+        self._delayed_spawn_target(env_ids_tensor)
+
         # =====================================================================
         # Stage 2: Episode 重置时清零累积 Hit 计数器
-        # 
+        #
         # 注意区分两种重采样:
         # - _resample_command(): Episode 重置，需要清零累积计数
         # - _resample_target_positions(): 冷静期后重采样，不清零累积计数
         # =====================================================================
-        env_ids_tensor = torch.tensor(env_ids, device=self.device, dtype=torch.long)
         self.cumulative_hit_count[env_ids_tensor] = 0.0
 
         root_pos = self.body_pos_w[:, 0].clone()
@@ -929,11 +901,12 @@ class MotionCommand(CommandTerm):
         # 1. 绘制目标小球 (红色实心球)
         self.target_sphere_visualizer.visualize(self.target_pos_w)
         
-        # 2. 绘制引导大球线框和采样区域边界 (使用 debug lines)
+        # 2. 绘制引导大球线框 (使用 debug lines)
         if HAS_DEBUG_DRAW and hasattr(self, "_debug_draw"):
             self._debug_draw.clear_lines()
             self._draw_guidance_spheres()
-            self._draw_sampling_regions()
+            # [已注释] 采样区域边界可视化 (课程学习已取消)
+            # self._draw_sampling_regions()
     
     def _draw_guidance_spheres(self):
         """
@@ -1128,108 +1101,58 @@ class MotionCommandCfg(CommandTermCfg):
     body_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
 
     # =========================================================================
-    # Stage 2: 目标小球配置 (Task-Oriented RL)
+    # 固定目标点配置 (已取消课程学习，改为固定目标训练)
+    # 坐标系: 相对于参考动作第一帧 Root (Pelvis) 的局部坐标系
+    #   x > 0 : 机器人前方 (m)
+    #   y     : 左右偏移 (m, 正=左, 负=右)
+    #   z > 0 : 骨盆以上高度 (m)
     # =========================================================================
-    
-    # 最终采样范围 (Level 1.0 时的范围)
-    # 相对于机器人 Root/Pelvis 的局部坐标系
-    target_sampling_range: dict[str, tuple[float, float]] = field(
-        default_factory=lambda: DEFAULT_TARGET_SAMPLING_RANGE.copy()
-    )
-    
-    # =========================================================================
-    # 初始采样范围 (Level 0.0 时的范围，课程学习起点)
-    # 
-    # 设计原则:
-    # - 必须在 DEFAULT_TARGET_SAMPLING_RANGE 的范围内
-    # - 设置为最终范围的中心点附近的极小区域
-    # - 便于初期学习，降低探索难度
-    # 
-    # DEFAULT_TARGET_SAMPLING_RANGE 中心点:
-    # - X: (0.6 + 0.65) / 2 = 0.625
-    # - Y: (-0.4 + 0.4) / 2 = 0.0
-    # - Z: (0.25 + 0.5) / 2 = 0.375
-    # =========================================================================
-    init_sampling_range: dict[str, tuple[float, float]] = field(
-        default_factory=lambda: {
-            "x": (0.624, 0.626),   # 前方 62.4-62.6cm (中心点 ±1mm)
-            "y": (-0.05, 0.05),   # 左右 ±5cm (中心点附近)
-            "z": (0.374, 0.376),  # 高度 37.4-37.6cm (中心点 ±1mm)
-        }
-    )
-    
+    # 默认: 前方 62.5cm, 居中, 骨盆以上 20 cm
+    # 可根据参考动作中拳头实际到达的高度调整 z 值(z=0.2正好是cross参考动作中拳头高度）
+    fixed_target_local_pos: tuple = (0.625, 0.0, 0.20)
+
+    # [已注释] 课程学习采样范围配置
+    # target_sampling_range: dict[str, tuple[float, float]] = field(
+    #     default_factory=lambda: {
+    #         "x": (0.6, 0.65), "y": (-0.4, 0.4), "z": (0.25, 0.5),
+    #     }
+    # )
+    # init_sampling_range: dict[str, tuple[float, float]] = field(
+    #     default_factory=lambda: {
+    #         "x": (0.624, 0.626), "y": (-0.05, 0.05), "z": (0.374, 0.376),
+    #     }
+    # )
+
     # 引导大球半径 (固定值，用于可视化奖励生效范围)
     guidance_sphere_radius: float = 0.4
-    
+
     # =========================================================================
-    # Stage 2: Hit 检测配置
+    # Hit 检测配置
     # =========================================================================
-    
+
     # Hit 距离阈值 (米) - 对应目标小球半径
-    # 简化设计: 只用距离判断，不用速度
-    hit_distance_threshold: float = 0.12
-    
-    # Hit 后的延迟重采样时间 (秒)
-    # 设计目的:
-    # - Hit 后目标位置保持 1 秒不变
-    # - 这 1 秒内任务奖励失效，只有 Mimic 奖励
-    # - 鼓励机器人跟随参考动作收手
-    # - 1 秒后重采样目标位置，任务奖励重新生效
+    hit_distance_threshold: float = 0.1
+
+    # Hit 后延迟重置时间 (秒): 这段时间任务奖励失效，鼓励机器人收拳跟随参考动作
     hit_resample_delay: float = 1.8
-    
+
+    # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
+    spawn_target_delay: float = 1.0
+
     # 攻击肢体名称
     effector_body_name: str = "right_wrist_yaw_link"
-    
-    # =========================================================================
-    # Stage 2: 课程学习配置
-    # 
-    # 设计原则:
-    # - 采样范围从中心点逐步扩展到全范围
-    # - 设置 4 个等级 (0.0, 0.25, 0.5, 0.75, 1.0) 以简化课程
-    # - 使用滑动窗口统计最近 500 step 的 Hit 率
-    # - Hit 率 >= 75% 才能升级，确保当前难度已掌握
-    # =========================================================================
-    
-    # 每次课程升级的步长 (0.0 ~ 1.0)
-    # 设置为 0.25 意味着有 4 个等级: Level 0, 0.25, 0.5, 0.75, 1.0
-    curriculum_level_step: float = 0.25
-    
-    # 课程升级所需的滑动窗口大小 (Step 数)
-    # 使用最近 500 step 的 Hit 率来判断是否升级
-    curriculum_window_size: int = 500
-    
-    # 课程升级所需的 Hit 成功率阈值 (0.0 ~ 1.0)
-    # 
-    # =========================================================================
-    # 阈值计算分析 (考虑 Hit 后目标重采样):
-    # =========================================================================
-    # 
-    # Step 时长 = decimation × dt = 4 × 0.005 = 0.02 秒
-    # 
-    # 一次完整攻击周期 (Hit 后目标移动到新位置):
-    #   - 出拳攻击: ~0.3s
-    #   - 收回手臂: ~0.3s  
-    #   - 瞄准新位置: ~0.2s
-    #   - 总计: ~0.8-1.0s = 40-50 steps
-    # 
-    # 理论最大 Hit 率 = 1 hit / 50 steps = 2%
-    # 
-    # 设置为 0.005 (0.5%) 表示:
-    #   - 达到理论上限的 25%
-    #   - 500 steps × 128 envs = 64000 次机会
-    #   - 需要 320 次 Hit (每 env 平均 2.5 次/500steps)
-    #   - 每 env 约 4s 完成一次有效攻击，合理
-    # 
-    # 注意: 由于 Hit 后目标重采样，阈值比旧版 (0.02) 大幅降低
-    # =========================================================================
-    curriculum_hit_rate_threshold: float = 0.005
+
+    # [已注释] 课程学习配置
+    # curriculum_level_step: float = 0.25
+    # curriculum_window_size: int = 500
+    # curriculum_hit_rate_threshold: float = 0.005
     
     # 目标小球 Marker 配置 (红色实心球)
     target_sphere_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/target_sphere",
         markers={
             "sphere": sim_utils.SphereCfg(
-                radius=0.06,  # 半径 6cm，与 hit_distance_threshold 一致
+                radius=0.1,  # 半径 6cm，与 hit_distance_threshold 一致
                 visual_material=sim_utils.PreviewSurfaceCfg(
                     diffuse_color=(1.0, 0.2, 0.2),  # 红色
                     opacity=0.9,
