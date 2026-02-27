@@ -39,6 +39,8 @@ def robot_body_pos_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
         command.robot_body_pos_w,
         command.robot_body_quat_w,
     )
+    # 防止物理仿真不稳定产生 NaN/Inf 传播到网络导致训练崩溃
+    pos_b = torch.nan_to_num(pos_b, nan=0.0, posinf=10.0, neginf=-10.0)
 
     return pos_b.view(env.num_envs, -1)
 
@@ -54,6 +56,8 @@ def robot_body_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
         command.robot_body_quat_w,
     )
     mat = matrix_from_quat(ori_b)
+    # 防止物理仿真不稳定产生 NaN/Inf 传播到网络导致训练崩溃
+    mat = torch.nan_to_num(mat, nan=0.0, posinf=1.0, neginf=-1.0)
     return mat[..., :2].reshape(mat.shape[0], -1)
 
 
@@ -131,7 +135,9 @@ def target_relative_position(env: ManagerBasedEnv, command_name: str) -> torch.T
         target_pos_w,
         torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=env.device).repeat(env.num_envs, 1),
     )
-    
+    # 防止 spawn 延迟期间目标在地下(z=-10)或物理不稳定产生 NaN 传播到网络
+    target_pos_b = torch.nan_to_num(target_pos_b, nan=0.0, posinf=10.0, neginf=-10.0)
+
     return target_pos_b.view(env.num_envs, 3)
 
 
