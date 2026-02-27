@@ -1097,8 +1097,9 @@ class MotionCommandCfg(CommandTermCfg):
     # =========================================================================
     # 右脚高位鞭腿: 前方 50cm, 居中, 骨盆以上 10 cm (对应高踢时脚踝高度)
     # 注意: 需根据 roundhouse_right_fast_high 参考动作中脚踝实际到达高度微调 z 值
-    # 高位鞭腿的适合点位(0.6, 0.0, 0.05)
-    fixed_target_local_pos: tuple = (0.6, 0.0, 0.05)
+    # 高位鞭腿的适合点位(0.5, 0.0, 0.05)
+    # 正蹬的合适点位为(0.6, 0.0, -0.3)
+    fixed_target_local_pos: tuple = (0.5, 0.0, -0.3)
 
     # [已注释] 课程学习采样范围配置
     # target_sampling_range: dict[str, tuple[float, float]] = field(
@@ -1126,7 +1127,7 @@ class MotionCommandCfg(CommandTermCfg):
     hit_resample_delay: float = 1.8
 
     # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
-    spawn_target_delay: float = 1.0
+    spawn_target_delay: float = 0.01
 
     # 攻击肢体名称 (右脚高位鞭腿: right_ankle_roll_link)
     effector_body_name: str = "right_ankle_roll_link"
