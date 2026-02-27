@@ -279,7 +279,7 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
     # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4
-    one_hot[:, 0] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
+    one_hot[:, 1] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
     
     # Stage 2 TODO: 从以下来源解析技能类型:
     #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
