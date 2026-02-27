@@ -493,17 +493,26 @@ class RewardsCfg:
         weight=1.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.5},
     )
-    # 除去右手以外其他11个身体部分link的mimic
+    # 除去右脚(攻击肢体)以外其他11个身体部分link的mimic
+    # roundhouse_right_fast_high: 排除右髋/右膝/右踝，让task reward驱动右腿运动
     mimic_non_right_hand_body_pos = RewTerm(
         func=mdp.mimic_non_right_hand_body_position_error_exp,
         weight=4.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
+        params={
+            "command_name": "motion",
+            "std": 0.3,
+            "right_hand_names": ["right_hip_roll_link", "right_knee_link", "right_ankle_roll_link"],
+        },
     )
-    # Mimic 非右手身体部分姿态奖励
+    # Mimic 非右脚身体部分姿态奖励
     mimic_non_right_hand_body_ori = RewTerm(
         func=mdp.mimic_non_right_hand_body_orientation_error_exp,
         weight=4.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
+        params={
+            "command_name": "motion",
+            "std": 0.3,
+            "right_hand_names": ["right_hip_roll_link", "right_knee_link", "right_ankle_roll_link"],
+        },
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
