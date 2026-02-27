@@ -269,12 +269,13 @@ def effector_target_near(
     return reward
 
 
-def effector_face_target(
+def body_face_target(
     env: ManagerBasedRLEnv,
     command_name: str,
 ) -> torch.Tensor:
     """
-    [战术奖励] 鼓励机器人躯干朝向目标
+    [战术奖励] 鼓励机器人躯干（pelvis/root）水平朝向目标
+    注意: 使用 root（pelvis）的前向方向，与末端执行器类型无关（拳/腿均适用）
     
     逻辑:
     1. 计算躯干前向向量 (从 root 到 torso 的方向或 torso 的朝向)
@@ -550,84 +551,84 @@ def effector_velocity_towards_target(
     reward = torch.where(should_reward, vel_reward, torch.zeros_like(vel_reward))
     return reward
 # =================================================
-# 对末端执行器的link跟踪增强奖励
+# 对末端执行器的link跟踪增强奖励 (右脚高位鞭腿)
 # =============================================================================
-def mimic_right_hand_position_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
+def mimic_right_leg_position_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
     """
-    右手末端 mimic 位置奖励，鼓励机器人右手靠近参考动作的右手位置。
+    右腿末端 mimic 位置奖励：鼓励机器人右腿 link 位置靠近参考动作。
+    追踪 right_hip_roll_link / right_knee_link / right_ankle_roll_link 三个 link 的位置误差均值。
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
-    # 使用实际 body_names 中的右臂/右手 link 名称
-    right_hand_link_names = [
-        "right_shoulder_roll_link",
-        "right_elbow_link",
-        "right_wrist_yaw_link",
+    right_leg_link_names = [
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
     ]
-    missing = [name for name in right_hand_link_names if name not in command.cfg.body_names]
-    assert not missing, f"Missing right hand link names in body_names: {missing}"
-    idxs = [command.cfg.body_names.index(name) for name in right_hand_link_names]
-    assert len(idxs) > 0, "No right hand link indexes found!"
+    missing = [name for name in right_leg_link_names if name not in command.cfg.body_names]
+    assert not missing, f"Missing right leg link names in body_names: {missing}"
+    idxs = [command.cfg.body_names.index(name) for name in right_leg_link_names]
+    assert len(idxs) > 0, "No right leg link indexes found!"
     error = torch.sum(
         torch.square(command.body_pos_relative_w[:, idxs] - command.robot_body_pos_w[:, idxs]), dim=-1
     )
     reward = torch.exp(-error.mean(-1) / std**2)
-    # 检查 reward 是否有 NaN/inf
-    assert not torch.isnan(reward).any(), "mimic_right_hand_position_exp reward contains NaN!"
-    assert not torch.isinf(reward).any(), "mimic_right_hand_position_exp reward contains Inf!"
+    assert not torch.isnan(reward).any(), "mimic_right_leg_position_exp reward contains NaN!"
+    assert not torch.isinf(reward).any(), "mimic_right_leg_position_exp reward contains Inf!"
     return reward
 
-def mimic_right_hand_orientation_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.2) -> torch.Tensor:
+
+def mimic_right_leg_orientation_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.2) -> torch.Tensor:
     """
-    右手末端 mimic 姿态奖励，鼓励机器人右手朝向与参考动作一致。
+    右腿末端 mimic 姿态奖励：鼓励机器人右腿 link 朝向与参考动作一致。
+    追踪 right_hip_roll_link / right_knee_link / right_ankle_roll_link 三个 link 的姿态误差均值。
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
-    right_hand_link_names = [
-        "right_shoulder_roll_link",
-        "right_elbow_link",
-        "right_wrist_yaw_link",
+    right_leg_link_names = [
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
     ]
-    missing = [name for name in right_hand_link_names if name not in command.cfg.body_names]
-    assert not missing, f"Missing right hand link names in body_names: {missing}"
-    idxs = [command.cfg.body_names.index(name) for name in right_hand_link_names]
-    assert len(idxs) > 0, "No right hand link indexes found!"
+    missing = [name for name in right_leg_link_names if name not in command.cfg.body_names]
+    assert not missing, f"Missing right leg link names in body_names: {missing}"
+    idxs = [command.cfg.body_names.index(name) for name in right_leg_link_names]
+    assert len(idxs) > 0, "No right leg link indexes found!"
     error = quat_error_magnitude(command.body_quat_relative_w[:, idxs], command.robot_body_quat_w[:, idxs]) ** 2
     reward = torch.exp(-error.mean(-1) / std**2)
-    assert not torch.isnan(reward).any(), "mimic_right_hand_orientation_exp reward contains NaN!"
-    assert not torch.isinf(reward).any(), "mimic_right_hand_orientation_exp reward contains Inf!"
+    assert not torch.isnan(reward).any(), "mimic_right_leg_orientation_exp reward contains NaN!"
+    assert not torch.isinf(reward).any(), "mimic_right_leg_orientation_exp reward contains Inf!"
     return reward
 
 # =============================================================================
 # 右手关键关节 DOF mimic 奖励
 # =============================================================================
 
-def mimic_right_elbow_dof_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
+def mimic_right_knee_dof_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
     """
-    Mimic 右肘关节 DOF 奖励：鼓励机器人肘关节角度跟随参考动作。
-    - 只约束 right_elbow_joint 的关节角度（弧度）
+    Mimic 右膝关节 DOF 奖励：鼓励机器人膝关节角度跟随参考动作。
+    - 只约束 right_knee_joint 的关节角度（弧度）
+    - 高位鞭腿中膝关节负责控制踢击高度和伸展力度
     - 指数型奖励：reward = exp(-angle_error^2 / std^2)
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
-    # 获取机器人关节名索引
     joint_names = command.robot.data.joint_names
-    #print("[DEBUG] robot joint_names:", joint_names)
-    idx = joint_names.index("right_elbow_joint")
-    # 获取参考动作和机器人当前肘关节角度
+    idx = joint_names.index("right_knee_joint")
     ref_angle = command.joint_pos[:, idx]  # (num_envs,)
     robot_angle = command.robot_joint_pos[:, idx]  # (num_envs,)
-    # 计算角度误差
     error = torch.square(ref_angle - robot_angle)
     reward = torch.exp(-error / std**2)
     return reward
 
-def mimic_right_shoulder_roll_dof_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
+
+def mimic_right_hip_roll_dof_exp(env: ManagerBasedRLEnv, command_name: str, std: float = 0.1) -> torch.Tensor:
     """
-    Mimic 右肩外展关节 DOF 奖励：鼓励机器人肩膀外展角度跟随参考动作。
-    - 只约束 right_shoulder_roll_joint 的关节角度（弧度）
+    Mimic 右髋外展关节 DOF 奖励：鼓励机器人髋外展角度跟随参考动作。
+    - 只约束 right_hip_roll_joint 的关节角度（弧度）
+    - 高位鞭腿中髋外展关节是鞭腿动作的特征关节（腿向侧方甩出）
     - 指数型奖励：reward = exp(-angle_error^2 / std^2)
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     joint_names = command.robot.data.joint_names
-    idx = joint_names.index("right_shoulder_roll_joint")
+    idx = joint_names.index("right_hip_roll_joint")
     ref_angle = command.joint_pos[:, idx]  # (num_envs,)
     robot_angle = command.robot_joint_pos[:, idx]  # (num_envs,)
     error = torch.square(ref_angle - robot_angle)
