@@ -395,13 +395,13 @@ class RewardsCfg:
     # [战术] 躯干（pelvis）水平朝向目标 - 拳/腿任务均适用
     body_face_target = RewTerm(
         func=mdp.body_face_target,
-        weight=1.0,
+        weight=0.0,
         params={"command_name": "motion"},
     )
 
     effector_velocity_towards_target = RewTerm(
         func=mdp.effector_velocity_towards_target,
-        weight=2.0,  # 可调整
+        weight=1.5,  # 可调整
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,
@@ -424,10 +424,10 @@ class RewardsCfg:
     # [姿态] 惩罚身体过度倾斜
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=2000.0,  # 权重为正，函数返回负值
+        weight=1000.0,  # 权重为正，函数返回负值
         params={
             "command_name": "motion",
-            "tilt_threshold": 0.0097,  # 约8度
+            "tilt_threshold": 0.234,  # 0.0097约8度；0.234约40度（鞭腿用）
         },
     )
     
@@ -442,42 +442,42 @@ class RewardsCfg:
     # Mimic 右膝关节 DOF 奖励 (高位鞭腿：膝关节伸展控制踢击高度)
     mimic_right_elbow_dof = RewTerm(
         func=mdp.mimic_right_knee_dof_exp,
-        weight=3.0,  # 可根据实验调整
+        weight=1.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     # Mimic 右髋外展关节 DOF 奖励 (高位鞭腿：髋外展是鞭腿的特征动作)
     mimic_right_shoulder_roll_dof = RewTerm(
         func=mdp.mimic_right_hip_roll_dof_exp,
-        weight=3.0,  # 可根据实验调整
+        weight=1.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     #anchor link的mini
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=7.0,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
+        weight=1.5,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
         params={"command_name": "motion", "std": 0.25},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=2.5,  # Stage 2: 保留朝向约束
+        weight=1.5,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
     # 全身link的mimic
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=3.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=3.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.5},
     )
     # 除去右脚(攻击肢体)以外其他11个身体部分link的mimic
     # roundhouse_right_fast_high: 排除右髋/右膝/右踝，让task reward驱动右腿运动
     mimic_non_right_hand_body_pos = RewTerm(
         func=mdp.mimic_non_right_hand_body_position_error_exp,
-        weight=4.0,  # 可根据实验调整
+        weight=1.0,  # 可根据实验调整
         params={
             "command_name": "motion",
             "std": 0.3,
@@ -487,7 +487,7 @@ class RewardsCfg:
     # Mimic 非右脚身体部分姿态奖励
     mimic_non_right_hand_body_ori = RewTerm(
         func=mdp.mimic_non_right_hand_body_orientation_error_exp,
-        weight=4.0,  # 可根据实验调整
+        weight=1.0,  # 可根据实验调整
         params={
             "command_name": "motion",
             "std": 0.3,
@@ -496,12 +496,12 @@ class RewardsCfg:
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=1.0,  # Stage 2: 保留速度约束
+        weight=3.0,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=1.0,  # Stage 2: 保留角速度约束
+        weight=3.0,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
     
