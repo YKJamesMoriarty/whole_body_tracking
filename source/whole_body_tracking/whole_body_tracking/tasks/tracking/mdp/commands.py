@@ -1146,7 +1146,7 @@ class MotionCommandCfg(CommandTermCfg):
     hit_resample_delay: float = 1.8
 
     # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
-    spawn_target_delay: float = 0.0
+    spawn_target_delay: float = 1.2
 
     # 攻击肢体名称
     effector_body_name: str = "right_wrist_yaw_link"
