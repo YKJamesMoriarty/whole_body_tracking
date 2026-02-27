@@ -327,33 +327,22 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     # =========================================================================
-    # Stage 2  强化末端执行器（右手）的奖励
+    # Stage 2  强化末端执行器（右脚）的 link mimic 奖励 (目前注释，需要时启用)
     # =========================================================================
-    # Mimic 右手末端位置奖励
-    # mimic_right_hand_pos = RewTerm(
-    #     func=mdp.mimic_right_hand_position_exp,
+    # Mimic 右腿末端位置奖励 (right_hip_roll_link / right_knee_link / right_ankle_roll_link)
+    # mimic_right_leg_pos = RewTerm(
+    #     func=mdp.mimic_right_leg_position_exp,
     #     weight=0.0,  # 可根据实验调整
     #     params={"command_name": "motion", "std": 0.3},
     # )
-    # Mimic 右手末端旋转奖励
-    # mimic_right_hand_ori = RewTerm(
-    #     func=mdp.mimic_right_hand_orientation_exp,
+    # Mimic 右腿末端姿态奖励
+    # mimic_right_leg_ori = RewTerm(
+    #     func=mdp.mimic_right_leg_orientation_exp,
     #     weight=0.0,  # 可根据实验调整
     #     params={"command_name": "motion", "std": 0.3},
     # )
     
-    # Mimic 右肘关节 DOF 奖励
-    mimic_right_elbow_dof = RewTerm(
-        func=mdp.mimic_right_elbow_dof_exp,
-        weight=3.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
-    )
-    # Mimic 右肩外展关节 DOF 奖励
-    mimic_right_shoulder_roll_dof = RewTerm(
-        func=mdp.mimic_right_shoulder_roll_dof_exp,
-        weight=3.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
-    )
+    
     """Reward terms for the MDP.
     
     Stage 2: Task-Oriented RL 奖励配置 (进展奖励版)
@@ -401,9 +390,9 @@ class RewardsCfg:
         },
     )
     
-    # [战术] 躯干朝向目标 - 鼓励正确的攻击姿态
-    effector_face_target = RewTerm(
-        func=mdp.effector_face_target,
+    # [战术] 躯干（pelvis）水平朝向目标 - 拳/腿任务均适用
+    body_face_target = RewTerm(
+        func=mdp.body_face_target,
         weight=1.0,
         params={"command_name": "motion"},
     )
@@ -419,37 +408,13 @@ class RewardsCfg:
     
     # =========================================================================
     # Stage 2 收手阶段奖励/惩罚 (Hit 后 0.2~1.0s 冷静期内)
-    # 
+    # （已经不需要！！作废！！）
     # 设计原则:
     # - 只在冷静期内生效，鼓励机器人收手
     # - 与进攻阶段的 Near 奖励对称设计
     # - 配合 Mimic 奖励，引导跟随参考动作
     # =========================================================================
-    
-    # [收手惩罚-小球] 手停留在目标小球内的惩罚
-    # Hit 后 0.2s 开始，如果手还在小球内就惩罚
-    # pen_linger_in_hit_sphere = RewTerm(
-    #     func=mdp.pen_linger_in_hit_sphere,
-    #     weight=0.0,  # 权重为正，函数返回负值
-    #     params={
-    #         "command_name": "motion",
-    #         "grace_period": 0.2,
-    #     },
-    # )
-    
-    # [收手奖励-大球] 手离开目标的进展奖励 (与 Near 对称)
-    # 权重与 Near 相同，形成对称的进攻-收手周期
-    # rew_retract_from_target = RewTerm(
-    #     func=mdp.rew_retract_from_target,
-    #     weight=0.0,  # 与 effector_target_near 相同
-    #     params={
-    #         "command_name": "motion",
-    #         "guidance_radius": 0.4,
-    #         "grace_period": 0.2,
-    #         "scale": 10.0,  # 与 Near 相同
-    #     },
-    # )
-    
+ 
     # =========================================================================
     # Stage 2 惩罚项 (姿态稳定性)
     # =========================================================================
@@ -472,7 +437,19 @@ class RewardsCfg:
     # - 防止长时间 Stage 2 训练后出现多余的移动或奇怪姿态
     # - cross 数据是原地出拳，不需要大幅移动，所以保留位置约束有意义
     # =========================================================================
-
+    # Mimic 右膝关节 DOF 奖励 (高位鞭腿：膝关节伸展控制踢击高度)
+    mimic_right_elbow_dof = RewTerm(
+        func=mdp.mimic_right_knee_dof_exp,
+        weight=3.0,  # 可根据实验调整
+        params={"command_name": "motion", "std": 0.3},
+    )
+    # Mimic 右髋外展关节 DOF 奖励 (高位鞭腿：髋外展是鞭腿的特征动作)
+    mimic_right_shoulder_roll_dof = RewTerm(
+        func=mdp.mimic_right_hip_roll_dof_exp,
+        weight=3.0,  # 可根据实验调整
+        params={"command_name": "motion", "std": 0.3},
+    )
+    #anchor link的mini
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
         weight=5.0,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
@@ -483,6 +460,7 @@ class RewardsCfg:
         weight=0.5,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
+    # 全身link的mimic
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
         weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
