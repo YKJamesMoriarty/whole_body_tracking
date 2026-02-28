@@ -424,10 +424,10 @@ class RewardsCfg:
     # [姿态] 惩罚身体过度倾斜
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=1000.0,  # 权重为正，函数返回负值
+        weight=1500.0,  # 权重为正，函数返回负值
         params={
             "command_name": "motion",
-            "tilt_threshold": 0.234,  # 0.0097约8度；0.234约40度（鞭腿用）
+            "tilt_threshold": 0.134,  # 0.0097约8度；0.234约40度（鞭腿用）
         },
     )
     
