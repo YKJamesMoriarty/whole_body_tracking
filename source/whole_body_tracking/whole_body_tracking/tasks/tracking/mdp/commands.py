@@ -1099,7 +1099,7 @@ class MotionCommandCfg(CommandTermCfg):
     # 注意: 需根据 roundhouse_right_fast_high 参考动作中脚踝实际到达高度微调 z 值
     # 高位鞭腿的适合点位(0.5, 0.0, 0.05)
     # 正蹬的合适点位为(0.6, 0.0, -0.3)
-    fixed_target_local_pos: tuple = (0.6, 0.0, -0.2)
+    fixed_target_local_pos: tuple = (0.685, 0.0, -0.16)
 
     # [已注释] 课程学习采样范围配置
     # target_sampling_range: dict[str, tuple[float, float]] = field(
