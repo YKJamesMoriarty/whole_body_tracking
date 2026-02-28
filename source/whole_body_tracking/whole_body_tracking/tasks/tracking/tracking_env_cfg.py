@@ -384,7 +384,7 @@ class RewardsCfg:
     # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=18.0,
+        weight=19.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
