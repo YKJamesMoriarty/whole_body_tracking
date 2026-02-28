@@ -345,13 +345,13 @@ class RewardsCfg:
     # Mimic 右肘关节 DOF 奖励
     mimic_right_elbow_dof = RewTerm(
         func=mdp.mimic_right_elbow_dof_exp,
-        weight=3.0,  # 可根据实验调整
+        weight=1.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     # Mimic 右肩外展关节 DOF 奖励
     mimic_right_shoulder_roll_dof = RewTerm(
         func=mdp.mimic_right_shoulder_roll_dof_exp,
-        weight=3.0,  # 可根据实验调整
+        weight=1.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     """Reward terms for the MDP.
@@ -485,12 +485,12 @@ class RewardsCfg:
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=3.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=3.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.5},
     )
     # 除去右手以外其他11个身体部分link的mimic
