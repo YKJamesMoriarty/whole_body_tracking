@@ -442,30 +442,30 @@ class RewardsCfg:
     # Mimic 右膝关节 DOF 奖励 (高位鞭腿：膝关节伸展控制踢击高度)
     mimic_right_elbow_dof = RewTerm(
         func=mdp.mimic_right_knee_dof_exp,
-        weight=0.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
+        weight=3.0,  # 可根据实验调整
+        params={"command_name": "motion", "std": 0.25},
     )
     # Mimic 右髋外展关节 DOF 奖励 (高位鞭腿：髋外展是鞭腿的特征动作)
     mimic_right_shoulder_roll_dof = RewTerm(
         func=mdp.mimic_right_hip_roll_dof_exp,
-        weight=0.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
+        weight=3.0,  # 可根据实验调整
+        params={"command_name": "motion", "std": 0.25},
     )
     #anchor link的mini
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=1.5,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
+        weight=2.5,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
         params={"command_name": "motion", "std": 0.25},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=1.5,  # Stage 2: 保留朝向约束
+        weight=2.5,  # Stage 2: 保留朝向约束
         params={"command_name": "motion", "std": 0.4},
     )
     # 全身link的mimic
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=3.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=4.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
@@ -496,12 +496,12 @@ class RewardsCfg:
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=3.0,  # Stage 2: 保留速度约束
+        weight=2.0,  # Stage 2: 保留速度约束
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=3.0,  # Stage 2: 保留角速度约束
+        weight=2.0,  # Stage 2: 保留角速度约束
         params={"command_name": "motion", "std": 3.14},
     )
     
