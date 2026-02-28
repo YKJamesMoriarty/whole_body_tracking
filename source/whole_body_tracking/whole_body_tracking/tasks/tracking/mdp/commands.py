@@ -1118,7 +1118,7 @@ class MotionCommandCfg(CommandTermCfg):
     # 可根据参考动作中拳头实际到达的高度调整 z 值(z=0.2正好是cross参考动作中拳头高度）
     # cross的合适目标为(0.625, 0.0, 0.20)
     # swing的合适目标为(0.565, 0.0, 0.35)
-    fixed_target_local_pos: tuple = (0.565, 0.0, 0.35)
+    fixed_target_local_pos: tuple = (0.62, 0.15, 0.37)
 
     # [已注释] 课程学习采样范围配置
     # target_sampling_range: dict[str, tuple[float, float]] = field(
