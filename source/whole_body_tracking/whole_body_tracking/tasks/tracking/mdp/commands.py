@@ -1099,7 +1099,7 @@ class MotionCommandCfg(CommandTermCfg):
     # 注意: 需根据 roundhouse_right_fast_high 参考动作中脚踝实际到达高度微调 z 值
     # 高位鞭腿的适合点位(0.5, 0.0, 0.05)
     # 正蹬的合适点位为(0.6, 0.0, -0.3)
-    fixed_target_local_pos: tuple = (0.5, 0.0, -0.3)
+    fixed_target_local_pos: tuple = (0.6, 0.0, -0.2)
 
     # [已注释] 课程学习采样范围配置
     # target_sampling_range: dict[str, tuple[float, float]] = field(
@@ -1124,7 +1124,7 @@ class MotionCommandCfg(CommandTermCfg):
     hit_distance_threshold: float = 0.1
 
     # Hit 后延迟重置时间 (秒): 这段时间任务奖励失效，鼓励机器人收拳跟随参考动作
-    hit_resample_delay: float = 1.8
+    hit_resample_delay: float = 2.4
 
     # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
     spawn_target_delay: float = 0.8
