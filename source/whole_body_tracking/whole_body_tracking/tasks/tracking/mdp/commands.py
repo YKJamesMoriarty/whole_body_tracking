@@ -1098,7 +1098,7 @@ class MotionCommandCfg(CommandTermCfg):
     # 右脚高位鞭腿: 前方 50cm, 居中, 骨盆以上 10 cm (对应高踢时脚踝高度)
     # 注意: 需根据 roundhouse_right_fast_high 参考动作中脚踝实际到达高度微调 z 值
     # 高位鞭腿的适合点位(0.6, 0.0, 0.05)
-    fixed_target_local_pos: tuple = (0.6, 0.0, 0.05)
+    fixed_target_local_pos: tuple = (1.1, 0.0, 0.05)
 
     # [已注释] 课程学习采样范围配置
     # target_sampling_range: dict[str, tuple[float, float]] = field(
