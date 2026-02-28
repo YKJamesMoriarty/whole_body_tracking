@@ -375,7 +375,7 @@ class RewardsCfg:
     # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=15.0,
+        weight=12.0,
         params={"command_name": "motion"},
     )
     
@@ -393,7 +393,7 @@ class RewardsCfg:
     # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=17.0,
+        weight=15.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
@@ -485,24 +485,24 @@ class RewardsCfg:
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=3.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=5.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=3.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=5.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
         params={"command_name": "motion", "std": 0.5},
     )
     # 除去右手以外其他11个身体部分link的mimic
     mimic_non_right_hand_body_pos = RewTerm(
         func=mdp.mimic_non_right_hand_body_position_error_exp,
-        weight=4.0,  # 可根据实验调整
+        weight=2.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     # Mimic 非右手身体部分姿态奖励
     mimic_non_right_hand_body_ori = RewTerm(
         func=mdp.mimic_non_right_hand_body_orientation_error_exp,
-        weight=4.0,  # 可根据实验调整
+        weight=2.0,  # 可根据实验调整
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_lin_vel = RewTerm(
