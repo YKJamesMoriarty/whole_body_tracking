@@ -90,7 +90,7 @@ def motion_anchor_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor
 # =============================================================================
 
 
-def target_relative_position(env: ManagerBasedEnv, command_name: str, effector_body_name: str = "right_wrist_yaw_link") -> torch.Tensor:
+def target_relative_position(env: ManagerBasedEnv, command_name: str, effector_body_name: str = "right_ankle_roll_link") -> torch.Tensor:
     """
     (1) 目标相对位置 (3 维): [x, y, z]
     
@@ -282,7 +282,7 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
     # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4 .....
-    one_hot[:, 6] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
+    one_hot[:, 4] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
     
     # Stage 2 TODO: 从以下来源解析技能类型:
     #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
