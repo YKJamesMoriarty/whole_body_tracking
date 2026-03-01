@@ -366,7 +366,7 @@ class RewardsCfg:
     # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=17.0,
+        weight=15.0,
         params={"command_name": "motion"},
     )
     
@@ -384,7 +384,7 @@ class RewardsCfg:
     # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=21.0,
+        weight=19.0,
         params={
             "command_name": "motion",
             "guidance_radius": 0.4,  # 引导球半径
