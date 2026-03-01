@@ -91,7 +91,7 @@ def effector_target_tracking_exp(
     env: ManagerBasedRLEnv, 
     command_name: str, 
     std: float = 0.2,
-    effector_body_name: str = "left_ankle_roll_link"
+    effector_body_name: str = "left_wrist_yaw_link"
 ) -> torch.Tensor:
     """
     攻击肢体靠近目标位置的奖励

@@ -160,7 +160,7 @@ class ObservationsCfg:
         # Stage 1: 使用参考动作中攻击肢体的位置作为 dummy target
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
-            params={"command_name": "motion", "effector_body_name": "left_ankle_roll_link"},
+            params={"command_name": "motion", "effector_body_name": "left_wrist_yaw_link"},
             noise=Unoise(n_min=-0.1, n_max=0.1)
         )
         
@@ -241,7 +241,7 @@ class ObservationsCfg:
         # (1) 目标相对位置: 3 维
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
-            params={"command_name": "motion", "effector_body_name": "left_ankle_roll_link"}
+            params={"command_name": "motion", "effector_body_name": "left_wrist_yaw_link"}
         )
         
         # (2) 目标相对速度: 3 维
@@ -371,7 +371,7 @@ class RewardsCfg:
         params={
             "command_name": "motion",
             "std": 0.25,  # 较小的 std 让奖励对距离更敏感
-            "effector_body_name": "left_ankle_roll_link",
+            "effector_body_name": "left_wrist_yaw_link",
         },
     )
     
