@@ -1123,6 +1123,7 @@ class MotionCommandCfg(CommandTermCfg):
     hit_distance_threshold: float = 0.1
 
     # Hit 后延迟重置时间 (秒): 这段时间任务奖励失效，鼓励机器人收拳跟随参考动作
+    # 第三次训练中用的延长时间是2.5
     hit_resample_delay: float = 2.8
 
     # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
