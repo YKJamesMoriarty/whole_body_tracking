@@ -258,30 +258,31 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
         Tensor (num_envs, 16): One-Hot 编码的技能类型
     """
     # 技能索引对照表 (16 维):
-    # ===== 拳法 (0-5) =====
+
     # 0: r-Cross (右直拳)
     # 1: r-swing (右摆拳)
-    # 2: roundhouse_right_normal_low (右-低位鞭腿)
+    # 2: roundhouse_right_normal_low (右-低位鞭腿-不好用)
     # 3: roundhouse_right_fast_high (右-高位鞭腿)
-    # 4: frontkick_right_normal_body (右脚前蹬)
+    # 4: frontkick_right_normal_body (右脚前蹬-不好用)
+    # 5: stance (摆架子-右脚在前)
 
-    # 5: Overhand (砸拳)
-    # ===== 腿法 (6-11) =====
-    # 6: LowKick (低扫腿)
-    # 7: MidKick (中段踢)
-    # 8: HighKick (高踢)
-    # 9: FrontKick (前踢)
-    # 10: SideKick (侧踢)
-    # 11: RoundhouseKick (回旋踢)
-    # ===== 组合/特殊 (12-15) =====
-    # 12: Combo1 (组合1)
-    # 13: Combo2 (组合2)
-    # 14: 预留
-    # 15: 预留
+    # 6: roundhouse_right_normal_mid (右-中位鞭腿)
+    # 7: hook_left_normal_body (左钩拳)
+    # 8: roundhouse_left_normal_mid (左-中位鞭腿)
+
+
+    # 9: 
+    # 10: 
+    # 11: 
+
+    # 12: 
+    # 13: 
+    # 14: 
+    # 15: 
     
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
-    # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4
-    one_hot[:, 4] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
+    # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4 .....
+    one_hot[:, 6] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
     
     # Stage 2 TODO: 从以下来源解析技能类型:
     #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
