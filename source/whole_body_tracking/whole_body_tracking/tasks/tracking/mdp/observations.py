@@ -90,62 +90,22 @@ def motion_anchor_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor
 # =============================================================================
 
 
-def target_relative_position(env: ManagerBasedEnv, command_name: str, effector_body_name: str = "right_wrist_yaw_link") -> torch.Tensor:
+def target_relative_position(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
-    (1) 目标相对位置 (3 维): [x, y, z]
-    
-    坐标系设计说明:
-    ================
-    目标位置表示在 **机器人局部坐标系 (Body Frame)** 中:
-    - 原点: 机器人 Root (Pelvis/骨盆)
-    - X轴: 机器人正前方
-    - Y轴: 机器人左侧
-    - Z轴: 机器人上方
-    
-    Stage 1 技巧:
-    - target = 参考动作中该肢体应该到达的位置
-    - 使用 body_pos_relative_w（已对齐到机器人当前位置）
-    
-    Stage 2 TODO:
-    - 将 target_pos_w 替换为场景中实际的目标点
-    
-    注意：观测和奖励函数都使用相同的 target 来源 (body_pos_relative_w)
-    
-    Args:
-        env: 环境实例
-        command_name: 动作命令名称
-        effector_body_name: 攻击肢体名称
-    
+    (1) 目标相对位置 (3 维): [x, y, z]，在机器人局部坐标系 (Body Frame) 中
+
+    mobility 分支 (stance 类技能):
+    - 没有实际攻击目标，固定返回局部坐标 (0, 0, -10)
+    - 让网络学到"这个位置 = 当前无目标"的语义
+    - z=-10 表示目标在地面深处，不会与实际身体部位混淆
+
     Returns:
-        Tensor (num_envs, 3): 目标在机器人局部坐标系中的位置 [x_前后, y_左右, z_上下]
+        Tensor (num_envs, 3): 固定值 [0, 0, -10]，表示无目标
     """
-    command: MotionCommand = env.command_manager.get_term(command_name)
-    
-    # 获取攻击肢体的索引
-    try:
-        effector_index = command.cfg.body_names.index(effector_body_name)
-    except ValueError:
-        effector_index = -1
-    
-    # Stage 1: 目标位置 = 参考动作中该肢体的位置（已对齐到机器人当前位置）
-    # body_pos_relative_w: 把参考动作"移动"到机器人当前站立的位置
-    # 这和奖励函数 effector_target_tracking_exp 使用的是**同一个数据源**
-    target_pos_w = command.body_pos_relative_w[:, effector_index]  # (num_envs, 3) 世界坐标
-    
-    # 获取机器人 Root (Pelvis) 的世界坐标位置和朝向
-    robot_root_pos_w = command.robot_anchor_pos_w   # (num_envs, 3)
-    robot_root_quat_w = command.robot_anchor_quat_w  # (num_envs, 4)
-    
-    # 将目标位置从世界坐标系转换到机器人局部坐标系
-    # 数学公式: p_local = R_robot^(-1) * (p_target_world - p_robot_world)
-    target_pos_b, _ = subtract_frame_transforms(
-        robot_root_pos_w,
-        robot_root_quat_w,
-        target_pos_w,
-        torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=env.device).repeat(env.num_envs, 1),
-    )
-    
-    return target_pos_b.view(env.num_envs, 3)
+    # stance 技能: 无攻击目标，固定返回"地下"位置作为"无目标"信号
+    result = torch.zeros(env.num_envs, 3, device=env.device)
+    result[:, 2] = -10.0  # z 轴方向向下 10m，表示"无目标"
+    return result
 
 
 def target_relative_velocity(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
@@ -170,37 +130,33 @@ def target_relative_velocity(env: ManagerBasedEnv, command_name: str) -> torch.T
 def strikes_left(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
     (3) 剩余攻击次数 (1 维)
-    
-    含义: 归一化的剩余攻击次数，用于让策略知道还能打几拳/几脚
-    
-    Stage 1: 设为常数 1.0（满攻击次数）
-    
-    Stage 2 TODO:
+
+    mobility 分支 (stance 类技能):
+    - 无攻击任务，固定返回 0.0 表示"无剩余攻击次数"
+
+    Stage 2 TODO (攻击技能分支):
     - 跟踪实际剩余攻击次数并归一化
-    - 例如：总共3次攻击机会，已用1次，则返回 2/3 ≈ 0.67
-    
+
     Returns:
-        Tensor (num_envs, 1): 归一化的剩余攻击次数
+        Tensor (num_envs, 1): 0.0 表示无攻击次数
     """
-    return torch.ones(env.num_envs, 1, device=env.device)
+    return torch.zeros(env.num_envs, 1, device=env.device)
 
 
 def time_left(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
     (4) 剩余时间 (1 维)
-    
-    含义: 当前攻击窗口的归一化剩余时间
-    
-    Stage 1: 设为常数 1.0（满时间窗口）
-    
-    Stage 2 TODO:
-    - 根据攻击窗口计算实际剩余时间
-    - 例如：攻击窗口2秒，已过0.5秒，则返回 1.5/2.0 = 0.75
-    
+
+    mobility 分支 (stance 类技能):
+    - 无进攻时间窗口，固定返回 0.0 表示"不在攻击窗口内"
+
+    Stage 2 TODO (攻击技能分支):
+    - 根据攻击窗口计算实际归一化剩余时间
+
     Returns:
-        Tensor (num_envs, 1): 归一化的剩余时间
+        Tensor (num_envs, 1): 0.0 表示不在攻击窗口内
     """
-    return torch.ones(env.num_envs, 1, device=env.device)
+    return torch.zeros(env.num_envs, 1, device=env.device)
 
 
 def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
@@ -224,17 +180,10 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
     Returns:
         Tensor (num_envs, 4): One-Hot 编码的活跃肢体
     """
-    # Stage 1: 假设所有攻击都是右手出拳
-    # 格式: [左手, 右手, 左脚, 右脚]
-    one_hot = torch.zeros(env.num_envs, 4, device=env.device)
-    one_hot[:, 3] = 1.0  # 左手0，右手1，左脚2，右脚3
-    
-    # Stage 2 TODO: 根据以下信息动态确定活跃肢体:
-    #   - 动作文件名 (例如: "cross" -> 右手, "hook_left" -> 左手)
-    #   - 技能命令输入
-    #   - 当前动作的阶段
-    
-    return one_hot
+    # mobility 分支 (stance 类技能): 无攻击肢体，返回全零 [0, 0, 0, 0]
+    # 全零语义: "当前无活跃攻击肢体"
+    # Stage 2 TODO: 根据动作文件名或技能命令动态确定活跃肢体
+    return torch.zeros(env.num_envs, 4, device=env.device)
 
 
 def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
@@ -265,7 +214,7 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     # 3: roundhouse_right_fast_high (右-高位鞭腿)
     # 4: frontkick_right_normal_body (右脚前蹬)
 
-    # 5: Overhand (砸拳)
+    # 5: stance_orthodox_idle (摆架子/右势))
     # ===== 腿法 (6-11) =====
     # 6: LowKick (低扫腿)
     # 7: MidKick (中段踢)
@@ -281,7 +230,7 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
     # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4
-    one_hot[:, 4] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
+    one_hot[:, 5] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
     
     # Stage 2 TODO: 从以下来源解析技能类型:
     #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
