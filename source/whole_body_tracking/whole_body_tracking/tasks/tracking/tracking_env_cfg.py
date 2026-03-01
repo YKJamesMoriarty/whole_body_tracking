@@ -157,10 +157,10 @@ class ObservationsCfg:
         # =====================================================================
         
         # (1) 目标相对位置: 3 维
-        # Stage 1: 使用参考动作中攻击肢体的位置作为 dummy target
+        # stance 技能: 固定返回局部坐标 (0, 0, -10)，告知网络"当前无目标"
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
-            params={"command_name": "motion", "effector_body_name": "right_wrist_yaw_link"},
+            params={"command_name": "motion"},
             noise=Unoise(n_min=-0.1, n_max=0.1)
         )
         
@@ -239,9 +239,10 @@ class ObservationsCfg:
         # =====================================================================
         
         # (1) 目标相对位置: 3 维
+        # stance 技能: 固定返回局部坐标 (0, 0, -10)，告知网络"当前无目标"
         target_rel_pos = ObsTerm(
             func=mdp.target_relative_position,
-            params={"command_name": "motion", "effector_body_name": "right_wrist_yaw_link"}
+            params={"command_name": "motion"}
         )
         
         # (2) 目标相对速度: 3 维
@@ -359,22 +360,7 @@ class RewardsCfg:
         params={"command_name": "motion", "std": 3.14},
     )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
-    
-    # =========================================================================
-    # 新增: 攻击肢体靠近目标位置的奖励 (Stage 1 辅助)
-    # 权重设置较小 (0.2)，不影响 mimic 主导地位
-    # Stage 2 时可以增大权重
-    # =========================================================================
-    effector_target = RewTerm(
-        func=mdp.effector_target_tracking_exp,
-        weight=0.1,
-        params={
-            "command_name": "motion",
-            "std": 0.15,  # 较小的 std 让奖励对距离更敏感
-            "effector_body_name": "right_wrist_yaw_link",
-        },
-    )
-    
+
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
