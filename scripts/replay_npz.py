@@ -9,6 +9,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import pathlib
 import numpy as np
 import torch
 
@@ -70,13 +71,19 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
     registry_name = args_cli.registry_name
     if ":" not in registry_name:  # Check if the registry name includes alias, if not, append ":latest"
         registry_name += ":latest"
-    import pathlib
-
     import wandb
 
     api = wandb.Api()
     artifact = api.artifact(registry_name)
-    motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
+    artifact_dir = pathlib.Path(artifact.download())
+    motion_file_path = artifact_dir / "motion.npz"
+    if not motion_file_path.is_file():
+        npz_candidates = sorted(artifact_dir.glob("*.npz"))
+        if len(npz_candidates) == 0:
+            raise FileNotFoundError(f"No .npz file found in artifact directory: {artifact_dir}")
+        motion_file_path = npz_candidates[0]
+        print(f"[WARN] motion.npz not found, fallback to: {motion_file_path.name}")
+    motion_file = str(motion_file_path)
 
     motion = MotionLoader(
         motion_file,
