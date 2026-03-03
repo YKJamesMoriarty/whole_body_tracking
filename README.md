@@ -186,6 +186,97 @@ python scripts/rsl_rl/play.py --task=Tracking-Flat-G1-v0 --num_envs=2 --wandb_pa
 The WandB run path can be located in the run overview. It follows the format {your_organization}/{project_name}/ along
 with a unique 8-character identifier. Note that run_name is different from run_path.
 
+## Stage 3: Labeling & Hardcoded Multi-Skill Demo
+
+Stage 3 包含两类脚本：
+
+- `scripts/rsl_rl/label_skills.py`
+用于离线打标，输出 `(target_pos -> skill)` 映射与命中率矩阵
+- `scripts/rsl_rl/run_hardcoded_decision.py`
+用于按固定技能顺序做连续切换 demo（stance -> 攻击技能 -> stance -> ...）
+
+### 1) 离线打标 (`label_skills.py`)
+
+核心逻辑：
+
+- 在采样网格中遍历目标点
+- 每个 `(skill, target)` 组合运行 `n_episodes` 次
+- 命中判定支持两种模式：
+  - 宽松模式（默认）：命中过就算成功，即使后续摔倒
+  - 严格模式：必须命中且该 episode 未摔倒才算成功
+
+新增关键参数：
+
+- `--count_fall_after_hit_as_success / --no-count_fall_after_hit_as_success`
+切换宽松/严格命中统计
+- 其它常用参数：`--grid_spacing`、`--n_episodes`、`--skills`、`--output_dir`
+
+示例（严格模式）：
+
+```bash
+python scripts/rsl_rl/label_skills.py \
+  --task Tracking-Flat-G1-v0 \
+  --num_envs 1024 \
+  --grid_spacing 0.05 \
+  --n_episodes 10 \
+  --skills cross swing roundhouse frontkick \
+  --model_dir basic_model \
+  --motion_dir Reference_Motion_IROS \
+  --output_dir label_strict \
+  --no-count_fall_after_hit_as_success
+```
+
+输出文件：
+
+- `grid_points.npy`: 采样点
+- `all_accuracies.npy`: 各技能命中率矩阵
+- `labels.npy`: 最优技能标签
+- `metadata.json`: 参数、标签分布与命中统计模式
+
+### 2) 硬编码多技能切换 Demo (`run_hardcoded_decision.py`)
+
+核心流程：
+
+- 根据 `label` 结果对目标点做过滤（命中率 + 距离阈值）
+- 按 `decision_cycle` 轮流执行技能
+- 每轮先 stance（目标在地下），再切攻击技能
+- 攻击命中后可配置恢复时间，再切回 stance
+
+新增/关键参数：
+
+- `--decision_cycle`: 技能切换顺序
+- `--min_accuracy`: 目标点最小命中率阈值
+- `--min_target_distance`, `--max_target_distance`: 目标距离过滤区间
+- `--use_roundhouse_fixed_points`: 是否对 roundhouse 使用固定点
+- `--roundhouse_fixed_points`: roundhouse 固定点列表，格式 `x,y,z;x,y,z`
+- `--post_hit_recovery_s`: 命中后恢复时间（秒）
+
+示例（roundhouse 仅使用固定点）：
+
+```bash
+python scripts/rsl_rl/run_hardcoded_decision.py \
+  --task Tracking-Flat-G1-v0 \
+  --num_envs 1 \
+  --num_trials 40 \
+  --decision_cycle cross swing roundhouse \
+  --labels_dir label \
+  --min_accuracy 0.7 \
+  --min_target_distance 0.4 \
+  --max_target_distance 0.8 \
+  --stance_duration_s 2.0 \
+  --attack_timeout_s 8.0 \
+  --post_hit_recovery_s 1.0 \
+  --use_roundhouse_fixed_points \
+  --roundhouse_fixed_points "0.6,0.0,0.05" \
+  --model_dir basic_model \
+  --motion_dir Reference_Motion_IROS
+```
+
+日志输出：
+
+- `outputs/stage3_decision/hardcoded_decision_log.json`
+包含 trial 级别的技能、目标点来源、命中结果、攻击时间、恢复时间
+
 ## Code Structure
 
 Below is an overview of the code structure for this repository:
@@ -410,3 +501,8 @@ Unitree G1 机器人特定配置:
 27. right_wrist_pitch_joint
 28. left_wrist_yaw_joint
 29. right_wrist_yaw_joint
+
+# 遗留问题
+
+目前代码中的scripts/rsl_rl/run_hardcoded_decision.py中的逻辑有问题：
+在用一个攻击动作打到目标以后，触发hit后会立刻切换到stance技能；这个时候如果是腿部技能的话，只额济切换回stance会摔跤，因为关节姿态变化过于剧烈！而且还是在腿部，会导致无法正常回收，直接摔倒！
