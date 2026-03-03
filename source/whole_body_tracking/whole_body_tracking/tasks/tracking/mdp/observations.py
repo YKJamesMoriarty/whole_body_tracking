@@ -210,86 +210,46 @@ def time_left(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
 def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
     (5) 活跃攻击肢体 (4 维) - One-Hot 编码
-    
-    含义: 指示当前正在使用哪个肢体进行攻击
-    格式: [左手, 右手, 左脚, 右脚]
-    
-    示例:
-    - 右手出拳: [0, 1, 0, 0]
-    - 左脚踢击: [0, 0, 1, 0]
-    
-    Stage 1: 硬编码为 "右手" = [0, 1, 0, 0]
-    
-    Stage 2 TODO:
-    - 根据当前技能/动作类型动态设置
-    - 从动作文件名或技能命令中解析
-    - 例如: "hook_left" -> 左手, "roundhouse_right" -> 右脚
-    
+
+    格式: [左手=0, 右手=1, 左脚=2, 右脚=3]
+
+    索引由 MotionCommandCfg.effector_one_hot_idx 配置（训练时静态）。
+    打标时 switch_skill() 动态修改 command.current_effector_one_hot_idx。
+
+    特殊值:
+        -1 = 无进攻肢体 (stance / 防守站姿)，返回全零向量 [0, 0, 0, 0]
+        注意: 不能直接用 tensor[:, -1]，Python 负索引会错误地写入最后一维 (右脚=3)
+
     Returns:
         Tensor (num_envs, 4): One-Hot 编码的活跃肢体
     """
-    # roundhouse_right_fast_high: 右脚高位鞭腿 → [0, 0, 0, 1]
-    # 格式: [左手, 右手, 左脚, 右脚]
+    command: MotionCommand = env.command_manager.get_term(command_name)
     one_hot = torch.zeros(env.num_envs, 4, device=env.device)
-    one_hot[:, 3] = 1.0  # 左手0，右手1，左脚2，右脚3
-    
-    # Stage 2 TODO: 根据以下信息动态确定活跃肢体:
-    #   - 动作文件名 (例如: "cross" -> 右手, "hook_left" -> 左手)
-    #   - 技能命令输入
-    #   - 当前动作的阶段
-    
+    if command.current_effector_one_hot_idx >= 0:
+        one_hot[:, command.current_effector_one_hot_idx] = 1.0
+    # current_effector_one_hot_idx == -1 → 保持全零 (stance/无进攻肢体)
     return one_hot
 
 
 def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
     (6) 技能类型 (16 维) - One-Hot 编码
-    
-    含义: 指示当前正在执行的技能/招式类型
-    
-    为什么是16维?
-    - 预留足够的维度给未来可能的所有技能
-    - 避免后续修改网络架构
-    - 支持拳法、腿法、组合技等多种类型
-    
-    Stage 1: 硬编码为 "直拳Jab" (索引0)
-    
-    Stage 2 TODO:
-    - 根据当前技能命令或动作类型动态设置
-    - 从动作文件名解析 (例如: "cross_right_normal" -> Cross)
-    
+
+    技能索引对照表:
+        0: r-Cross (右直拳)          1: r-swing (右摆拳)
+        2: roundhouse_right_low      3: roundhouse_right_fast_high (右高位鞭腿)
+        4: frontkick_right_body      5: stance (防守站姿)
+        6: roundhouse_right_mid      7: hook_left_body
+        8: roundhouse_left_mid       9~15: 预留
+
+    索引由 MotionCommandCfg.skill_type_idx 配置（训练时静态）。
+    打标时 switch_skill() 动态修改 command.current_skill_type_idx。
+
     Returns:
         Tensor (num_envs, 16): One-Hot 编码的技能类型
     """
-    # 技能索引对照表 (16 维):
-    # ===== 拳法 (0-5) =====
-    # 0: r-Cross (右直拳)
-    # 1: r-swing (右摆拳)
-    # 2: roundhouse_right_normal_low (右-低位鞭腿)
-    # 3: roundhouse_right_fast_high (右-高位鞭腿)
-    # 4: frontkick_right_normal_body (右脚前蹬)
-
-    # 5: Overhand (砸拳)
-    # ===== 腿法 (6-11) =====
-    # 6: LowKick (低扫腿)
-    # 7: MidKick (中段踢)
-    # 8: HighKick (高踢)
-    # 9: FrontKick (前踢)
-    # 10: SideKick (侧踢)
-    # 11: RoundhouseKick (回旋踢)
-    # ===== 组合/特殊 (12-15) =====
-    # 12: Combo1 (组合1)
-    # 13: Combo2 (组合2)
-    # 14: 预留
-    # 15: 预留
-    
+    command: MotionCommand = env.command_manager.get_term(command_name)
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
-    # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4
-    one_hot[:, 3] = 1.0  # roundhouse_right_fast_high (右-高位鞭腿)
-    
-    # Stage 2 TODO: 从以下来源解析技能类型:
-    #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
-    #   - 外部技能命令
-    #   - Registry 元数据
-    
+    one_hot[:, command.current_skill_type_idx] = 1.0
+
     return one_hot

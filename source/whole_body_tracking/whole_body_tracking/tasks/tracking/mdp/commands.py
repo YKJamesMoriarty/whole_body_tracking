@@ -266,7 +266,24 @@ class MotionCommand(CommandTerm):
         # [已注释] 课程学习 metrics
         # self.metrics["curriculum_level"] = torch.zeros(self.num_envs, device=self.device)
         # self.metrics["curriculum_hit_rate"] = torch.zeros(self.num_envs, device=self.device)
-        
+
+        # =====================================================================
+        # Stage 3 打标支持: 动态技能切换状态
+        # =====================================================================
+
+        # 记录上一个 episode 是否命中目标
+        # 在 _resample_command 清零 cumulative_hit_count 之前设置，供打标脚本读取
+        self.last_episode_had_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # 每个 env 独立的目标局部坐标覆盖 (None = 使用 cfg.fixed_target_local_pos)
+        # 打标脚本通过 set_per_env_targets() 设置，训练时不使用（保持 None）
+        self._per_env_target_override: torch.Tensor | None = None
+
+        # 当前技能的 one-hot 索引，供 observations.py 动态读取
+        # 训练时由 cfg 初始化（静态）；打标时由 switch_skill() 动态修改
+        self.current_skill_type_idx: int = self.cfg.skill_type_idx
+        self.current_effector_one_hot_idx: int = self.cfg.effector_one_hot_idx
+
         # 初始化目标位置（会在 reset 时被重新采样）
         self._init_target_positions()
 
@@ -302,11 +319,16 @@ class MotionCommand(CommandTerm):
 
         num_samples = len(env_ids)
 
-        # 固定局部坐标 (相对于参考动作第一帧 Root/Pelvis)
-        fx, fy, fz = self.cfg.fixed_target_local_pos
-        local_target_pos = torch.tensor(
-            [[fx, fy, fz]], dtype=torch.float32, device=self.device
-        ).repeat(num_samples, 1)  # (num_samples, 3)
+        # 确定每个 env 的局部目标位置 (相对于参考动作第一帧 Root/Pelvis)
+        if self._per_env_target_override is not None:
+            # 打标模式: 使用 set_per_env_targets() 为每个 env 独立设置的位置
+            local_target_pos = self._per_env_target_override[env_ids]  # (N, 3)
+        else:
+            # 正常训练模式: 所有 env 使用 cfg.fixed_target_local_pos
+            fx, fy, fz = self.cfg.fixed_target_local_pos
+            local_target_pos = torch.tensor(
+                [[fx, fy, fz]], dtype=torch.float32, device=self.device
+            ).repeat(num_samples, 1)  # (num_samples, 3)
 
         # 将局部坐标转换到世界坐标系
         # world_pos = root_pos + quat_apply(root_quat, local_pos)
@@ -523,6 +545,71 @@ class MotionCommand(CommandTerm):
         #     self._hit_history_filled = False
         #     print(f">>> CURRICULUM LEVEL UP! {old_level:.2f} -> {self.curriculum_level.item():.2f}")
 
+    # =========================================================================
+    # Stage 3 打标辅助方法 (供 label_skills.py 调用)
+    # =========================================================================
+
+    def set_per_env_targets(self, env_ids: torch.Tensor, local_positions: torch.Tensor):
+        """
+        为指定环境设置独立的目标局部坐标，供打标脚本分配不同采样点给不同 env。
+
+        调用后，_resample_target_positions 会自动读取该覆盖值，而不使用
+        cfg.fixed_target_local_pos，因此打标脚本只需在首次分配时调用一次即可。
+
+        Args:
+            env_ids: 要设置的环境索引 (1D LongTensor)
+            local_positions: 对应的局部坐标 (num_envs_to_set, 3)，Pelvis 局部坐标系
+        """
+        if self._per_env_target_override is None:
+            # 懒初始化: 先用 fixed_target_local_pos 填充所有 env
+            fx, fy, fz = self.cfg.fixed_target_local_pos
+            self._per_env_target_override = torch.tensor(
+                [[fx, fy, fz]], dtype=torch.float32, device=self.device
+            ).repeat(self.num_envs, 1)
+
+        self._per_env_target_override[env_ids] = local_positions.to(self.device)
+        # 立即刷新世界坐标 (让目标球马上移到新位置)
+        self._resample_target_positions(env_ids)
+
+    def reload_motion(self, motion_file: str):
+        """
+        热替换参考动作文件（切换技能时调用）。
+
+        重新加载 MotionLoader 并更新参考根骨骼的位置/朝向，
+        让新技能的 _resample_target_positions 以正确的原点为基准。
+
+        Args:
+            motion_file: .npz 文件完整路径
+        """
+        self.motion = MotionLoader(motion_file, self.body_indexes, device=self.device)  # type: ignore[arg-type]
+        self._reference_root_pos_w = self.motion.body_pos_w[0, 0].clone()
+        self._reference_root_quat_w = self.motion.body_quat_w[0, 0].clone()
+
+    def switch_skill(
+        self,
+        effector_body_name: str,
+        skill_type_idx: int,
+        effector_one_hot_idx: int,
+    ):
+        """
+        切换当前活跃技能，更新攻击肢体和 one-hot 索引。
+
+        打标脚本在换下一组技能时调用，observations.py 会在下一次读取时
+        自动使用更新后的索引，无需重启仿真。
+
+        Args:
+            effector_body_name:    新技能的攻击肢体名称 (必须在 cfg.body_names 中)
+            skill_type_idx:        skill_type_one_hot 中置 1 的维度
+            effector_one_hot_idx:  active_effector_one_hot 中置 1 的维度；
+                                   -1 = 无进攻肢体 (stance)，返回全零向量
+        """
+        # 更新攻击肢体索引
+        if effector_body_name in self.cfg.body_names:
+            self._effector_body_idx = self.cfg.body_names.index(effector_body_name)
+        # 更新 one-hot 索引
+        self.current_skill_type_idx = skill_type_idx
+        self.current_effector_one_hot_idx = effector_one_hot_idx
+
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation
         return torch.cat([self.joint_pos, self.joint_vel], dim=1)
@@ -710,6 +797,11 @@ class MotionCommand(CommandTerm):
         # - _resample_command(): Episode 重置，需要清零累积计数
         # - _resample_target_positions(): 冷静期后重采样，不清零累积计数
         # =====================================================================
+
+        # Stage 3 打标: 在清零之前，记录本 episode 是否发生过命中
+        # 打标脚本在 done 信号后读取此标志，之后此标志对应新 episode 自动清空
+        self.last_episode_had_hit[env_ids_tensor] = (self.cumulative_hit_count[env_ids_tensor] > 0)
+
         self.cumulative_hit_count[env_ids_tensor] = 0.0
 
         root_pos = self.body_pos_w[:, 0].clone()
@@ -1131,6 +1223,17 @@ class MotionCommandCfg(CommandTermCfg):
 
     # 攻击肢体名称 (右脚高位鞭腿: right_ankle_roll_link)
     effector_body_name: str = "right_ankle_roll_link"
+
+    # =========================================================================
+    # Stage 3 打标 / 多技能切换配置
+    # =========================================================================
+    # skill_type_one_hot 中置 1 的维度 (与 observations.py skill_type_one_hot 对照表一致)
+    #   0=cross, 1=swing, 3=roundhouse_high, 4=frontkick, 5=stance
+    skill_type_idx: int = 3       # 默认: 右高位鞭腿
+
+    # active_effector_one_hot 中置 1 的维度 [左手=0, 右手=1, 左脚=2, 右脚=3]
+    # -1 = 无进攻肢体 (stance)，observations.py 会返回全零向量 [0,0,0,0]
+    effector_one_hot_idx: int = 3 # 默认: 右脚
 
     # [已注释] 课程学习配置
     # curriculum_level_step: float = 0.25
