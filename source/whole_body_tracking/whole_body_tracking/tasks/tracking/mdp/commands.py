@@ -605,7 +605,13 @@ class MotionCommand(CommandTerm):
         """
         # 更新攻击肢体索引
         if effector_body_name in self.cfg.body_names:
-            self._effector_body_idx = self.cfg.body_names.index(effector_body_name)
+            self.effector_body_name = effector_body_name
+            self.effector_index = self.cfg.body_names.index(effector_body_name)
+        else:
+            raise ValueError(
+                f"无效 effector_body_name: {effector_body_name}, "
+                f"可用: {self.cfg.body_names}"
+            )
         # 更新 one-hot 索引
         self.current_skill_type_idx = skill_type_idx
         self.current_effector_one_hot_idx = effector_one_hot_idx

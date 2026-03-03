@@ -51,6 +51,15 @@ parser.add_argument(
 parser.add_argument("--model_dir", type=str, default="basic_model", help=".pt 文件所在目录（相对项目根目录）")
 parser.add_argument("--motion_dir", type=str, default="Reference_Motion_IROS", help=".npz 文件所在目录")
 parser.add_argument("--output_dir", type=str, default="labels", help="结果输出目录")
+parser.add_argument(
+    "--count_fall_after_hit_as_success",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help=(
+        "是否将“先命中后摔倒”的 episode 记为命中成功。"
+        "True=沿用旧逻辑；False=仅命中且未摔倒才算成功。"
+    ),
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + hydra_args
@@ -147,6 +156,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):  # type: ignore[override]
     print(f"[打标] 测试技能: {skills_to_test}")
     print(f"[打标] 每点每技能: {n_episodes} 次 | 并行 env: {num_envs}")
     print(f"[打标] 总测试次数: {n_points} × {n_skills} × {n_episodes} = {n_points*n_skills*n_episodes}")
+    print(f"[打标] 先命中后摔倒是否算成功: {args_cli.count_fall_after_hit_as_success}")
     print(f"{'='*60}\n")
 
     # 提前保存网格坐标和基础参数，方便中断后用已有的 skill_accuracy.npy 恢复
@@ -163,6 +173,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):  # type: ignore[override]
             "x_range":   [0.0,  1.2],
             "y_range":   [-0.5, 0.5],
             "z_range":   [-0.4, 0.4],
+            "count_fall_after_hit_as_success": args_cli.count_fall_after_hit_as_success,
             "status": "in_progress",  # 完成后会覆盖为包含 label_distribution 的完整版本
         }, f, indent=2, ensure_ascii=False)
     print(f"[打标] 网格坐标已预存至 {output_dir}/grid_points.npy")
@@ -173,7 +184,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):  # type: ignore[override]
     env_cfg.scene.num_envs    = num_envs
     env_cfg.episode_length_s  = 8.0    # 每次进攻尝试 8s
     env_cfg.commands.motion.spawn_target_delay = 0.5  # 缩短 spawn 延迟节省时间
-    env_cfg.commands.motion.hit_resample_delay = 0.5  # 缩短 hit 后冷却节省时间
+    if args_cli.count_fall_after_hit_as_success:
+        # 旧逻辑：命中后短延迟重采样，episode 内可继续出现新目标
+        env_cfg.commands.motion.hit_resample_delay = 0.5
+    else:
+        # 严格逻辑：首个 hit 后目标保持地下，直到 episode 结束（timeout / fall）
+        env_cfg.commands.motion.hit_resample_delay = env_cfg.episode_length_s + 1.0
     env_cfg.commands.motion.debug_vis = False          # 关闭可视化提升速度
 
     # 使用第一个技能的配置初始化 env
@@ -231,10 +247,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):  # type: ignore[override]
         env_hit_cnt      = [0]  * num_envs                        # 命中次数
         env_active       = [i < n_points for i in range(num_envs)] # 是否还在工作
         next_unassigned  = num_envs                                # 下一个待分配的 grid 点
+        # 当前 env episode 是否发生过命中（锁存，直到该 episode 结束）
+        episode_hit_latched = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
         completed   = 0                    # 已完成的目标点数
         total       = n_points
         t_start     = time.time()
+        stable_hit_episodes = 0
+        unstable_hit_episodes = 0
 
         # 为每个活跃 env 设置初始目标位置
         active_ids = torch.tensor(
@@ -258,18 +278,40 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):  # type: ignore[override]
             # 会被标记为 inference tensor，导致后续 inplace 修改报 RuntimeError
             obs, _, dones, _ = env.step(actions)
 
+            # 命中锁存：只要本 episode 任意时刻命中过一次，就保持 True
+            # 同时吸收 cumulative_hit_count 和 last_episode_had_hit，避免中途内部重采样覆盖状态
+            episode_hit_latched |= (command.cumulative_hit_count > 0)
+            episode_hit_latched |= command.last_episode_had_hit
+
             # 检查本步骤哪些 env 完成了一个 episode
             done_ids = torch.where(dones)[0].cpu().tolist()
+            # True 表示由非 timeout 终止（例如摔倒）
+            terminated_flags = env.unwrapped.termination_manager.terminated
 
             for env_id in done_ids:
                 if not env_active[env_id]:
                     continue
 
                 # 读取本 episode 是否命中（在 _resample_command 中清零前已记录）
-                had_hit = command.last_episode_had_hit[env_id].item()
-                if had_hit:
+                had_hit = bool(episode_hit_latched[env_id].item())
+                fell = bool(terminated_flags[env_id].item())
+
+                if had_hit and fell:
+                    unstable_hit_episodes += 1
+                if had_hit and (not fell):
+                    stable_hit_episodes += 1
+
+                if args_cli.count_fall_after_hit_as_success:
+                    episode_success = had_hit
+                else:
+                    # 严格逻辑：仅命中且未摔倒才计入成功
+                    episode_success = had_hit and (not fell)
+
+                if episode_success:
                     env_hit_cnt[env_id] += 1
                 env_episode_cnt[env_id] += 1
+                # 新 episode 开始前清空锁存状态
+                episode_hit_latched[env_id] = False
 
                 if env_episode_cnt[env_id] < n_episodes:
                     # 还需继续测该目标点：_per_env_target_override 保持不变，
@@ -307,6 +349,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):  # type: ignore[override]
         elapsed_skill = time.time() - t_start
         mean_acc = all_accuracies[:, skill_idx].mean()
         print(f"  [{skill_name}] 完成 | 耗时 {elapsed_skill:.0f}s | 平均命中率 {mean_acc:.3f}")
+        print(
+            f"  [{skill_name}] 统计: 稳定命中(未摔倒)={stable_hit_episodes}, "
+            f"不稳定命中(后续摔倒)={unstable_hit_episodes}"
+        )
 
         # 保存单技能结果（支持中断后部分恢复）
         np.save(output_dir / f"{skill_name}_accuracy.npy", all_accuracies[:, skill_idx])
@@ -341,6 +387,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):  # type: ignore[override]
         "x_range":   [0.0,  1.2],
         "y_range":   [-0.5, 0.5],
         "z_range":   [-0.4, 0.4],
+        "count_fall_after_hit_as_success": args_cli.count_fall_after_hit_as_success,
         "label_distribution": {
             str(sid): int(np.sum(final_labels == sid))
             for sid in sorted(set(skill_ids) | {STANCE_SKILL_ID})
