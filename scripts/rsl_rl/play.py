@@ -103,7 +103,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if art is None:
             print("[WARN] No model artifact found in the run.")
         else:
-            env_cfg.commands.motion.motion_file = str(pathlib.Path(art.download()) / "motion.npz")
+            artifact_dir = pathlib.Path(art.download())
+            motion_file_path = artifact_dir / "motion.npz"
+            if not motion_file_path.is_file():
+                npz_candidates = sorted(artifact_dir.glob("*.npz"))
+                if len(npz_candidates) == 0:
+                    raise FileNotFoundError(f"No .npz file found in artifact directory: {artifact_dir}")
+                motion_file_path = npz_candidates[0]
+                print(f"[WARN] motion.npz not found, fallback to: {motion_file_path.name}")
+            env_cfg.commands.motion.motion_file = str(motion_file_path)
 
     else:
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
