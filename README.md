@@ -97,6 +97,47 @@ This will automatically upload the processed motion file to the WandB registry w
 python scripts/replay_npz.py --registry_name={your-organization}-org/wandb-registry-motions/{motion_name}
 ```
 
+- Clip one loop segment from a long cyclic motion:
+  - Script: `scripts/replay_npz_with_frame.py`
+    - Function: replay one motion in Isaac Sim and print current frame index in terminal.
+    - Use case: find the end frame of one sub-action in a cyclic motion (stop by `Ctrl+C`).
+
+```bash
+python scripts/replay_npz_with_frame.py \
+  --registry_name {your-organization}-org/wandb-registry-Motions/{motion_name}:v0
+```
+
+  - Script: `scripts/trim_motion_npz.py`
+    - Function: trim frames `[start_frame, end_frame]` (inclusive), save locally, and upload to WandB registry.
+    - Local output path: `iros_motion/npz/trim_{motion_name}.npz`
+    - Registry target: `wandb-registry-Motions/trim_{motion_name}`
+
+```bash
+python scripts/trim_motion_npz.py \
+  --input_file artifacts/{motion_name}:v0/motion.npz \
+  --start_frame 0 \
+  --end_frame {selected_end_frame} \
+  --registry_type Motions
+```
+
+  - Current reference end frames (single-loop clips used in this project):
+    - `frontkick_right_fast_body_no_bag_2_150`: `248`
+    - `hook_left_normal_body2_150`: `173`
+    - `roundhouse_left_normal_mid_no_bag_1_150`: `217`
+    - `stance_orthodox_idle_normal_2_150`: `281`
+    - `cross_right_normal_body_2_150`: `113`
+    - `swing_right_normal_head2_150`: `145`
+    - `roundhouse_right_normal_mid_no_bag_2_150`: `214`
+
+  - Commands used for the latest adjustment:
+
+```bash
+python scripts/trim_motion_npz.py --input_file artifacts/hook_left_normal_body2_150:v0/motion.npz --start_frame 0 --end_frame 173 --registry_type Motions
+python scripts/trim_motion_npz.py --input_file artifacts/roundhouse_left_normal_mid_no_bag_1_150:v0/motion.npz --start_frame 0 --end_frame 217 --registry_type Motions
+python scripts/trim_motion_npz.py --input_file artifacts/cross_right_normal_body_2_150:v0/motion.npz --start_frame 0 --end_frame 113 --registry_type Motions
+python scripts/trim_motion_npz.py --input_file artifacts/swing_right_normal_head2_150:v0/motion.npz --start_frame 0 --end_frame 145 --registry_type Motions
+```
+
 - Debugging
     - Make sure to export WANDB_ENTITY to your organization name, not your personal username.
     - If /tmp folder is not accessible, modify csv_to_npz.py L319 & L326 to a temporary folder of your choice.
