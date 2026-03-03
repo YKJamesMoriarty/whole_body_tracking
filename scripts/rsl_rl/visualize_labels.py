@@ -240,7 +240,7 @@ def main():
     grid_points, all_accuracies, final_labels, metadata = load_labels(labels_dir)
     skills_tested = metadata.get("skills_tested", [f"skill_{k}" for k in range(all_accuracies.shape[1])])
 
-    print_statistics(grid_points, all_accuracies, final_labels, metadata, skills_tested)
+    #print_statistics(grid_points, all_accuracies, final_labels, metadata, skills_tested)
 
     save_dir = labels_dir if args.save else None
 
