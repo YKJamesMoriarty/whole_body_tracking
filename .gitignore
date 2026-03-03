@@ -46,3 +46,5 @@ artifacts/
 # Local data and models
 data/
 model_yk/
+basic_model/
+label/
