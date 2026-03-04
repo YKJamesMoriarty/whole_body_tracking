@@ -86,6 +86,16 @@ class CommandsCfg:
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=True,
+        fixed_target_local_pos=(0.625, 0.0, 0.20),
+        target_randomization_local_range={
+            "x": (-0.2, 0.2),
+            "y": (-0.2, 0.2),
+            "z": (-0.2, 0.2),
+        },
+        target_visible_time_range_s=(0.3, 0.8),
+        hidden_target_obs_local=(0.0, 0.0, -10.0),
+        guidance_sphere_radius=0.4,
+        hit_distance_threshold=0.06,
         pose_range={
             "x": (-0.05, 0.05),
             "y": (-0.05, 0.05),
@@ -326,202 +336,67 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    # =========================================================================
-    # Stage 2  强化末端执行器（右手）的奖励
-    # =========================================================================
-    # Mimic 右手末端位置奖励
-    # mimic_right_hand_pos = RewTerm(
-    #     func=mdp.mimic_right_hand_position_exp,
-    #     weight=0.0,  # 可根据实验调整
-    #     params={"command_name": "motion", "std": 0.3},
-    # )
-    # Mimic 右手末端旋转奖励
-    # mimic_right_hand_ori = RewTerm(
-    #     func=mdp.mimic_right_hand_orientation_exp,
-    #     weight=0.0,  # 可根据实验调整
-    #     params={"command_name": "motion", "std": 0.3},
-    # )
-    
-    # Mimic 右肘关节 DOF 奖励
-    mimic_right_elbow_dof = RewTerm(
-        func=mdp.mimic_right_elbow_dof_exp,
-        weight=3.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
-    )
-    # Mimic 右肩外展关节 DOF 奖励
-    mimic_right_shoulder_roll_dof = RewTerm(
-        func=mdp.mimic_right_shoulder_roll_dof_exp,
-        weight=3.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
-    )
-    """Reward terms for the MDP.
-    
-    Stage 2: Task-Oriented RL 奖励配置 (进展奖励版)
-    ===================================
-    
-    奖励设计原则:
-    1. 核心任务奖励 (effector_target_hit) 权重最高，明确训练目标
-    2. 进展奖励 (effector_target_near) 解决稀疏奖励探索问题
-    3. Mimic 奖励权重保留，维持动作质量
-    4. 进展奖励机制自然防止蹭分，无需额外惩罚
-    5. Hit 后 1s 延迟重采样，鼓励收手跟随参考动作
+    """Reward terms for Stage-2 two-phase training.
+
+    Phase split:
+    - pre-hit: mimic + target rewards (near/hit)
+    - post-hit: mimic + return-to-start reward
     """
-    
-    # =========================================================================
-    # Stage 2 核心任务奖励
-    # =========================================================================
-    
-    # [核心] 有效击中目标 - 最重要的奖励信号
-    # 权重 20.0: 脉冲式奖励，Hit 后目标会在 1s 后重采样
-    effector_target_hit = RewTerm(
-        func=mdp.effector_target_hit,
-        weight=15.0,
-        params={"command_name": "motion"},
-    )
-    
-    # [引导] 进展奖励 - 只有比历史最近距离更近时才给奖励
-    # 设计优点:
-    # - 手停在原地: 没有奖励 (距离没变近)
-    # - 手绕圈: 没有奖励 (距离没变近)
-    # - 手向目标移动: 有奖励 (与接近量成正比)
-    # - 手 Hit 到目标: 之后 Near 奖励自然归零 (不可能比 0 更近)
-    # 
-    # 权重设计:
-    # - Mimic 奖励约 0.5~0.9 * 6项 ≈ 3~4 每 step
-    # - Near 累计奖励 = 0.25m * 10.0 * 3.0 = 7.5 (整个进攻过程)
-    # - 设为 3.0 让 Near 奖励有足够吸引力，鼓励机器人主动进攻
-    # 权重最好不要加到30以上，那样的话最后机器人会只那near和hit，然后就摔倒；
+
+    # Task rewards (auto-gated by command.task_rewards_enabled in reward functions).
+    effector_target_hit = RewTerm(func=mdp.effector_target_hit, weight=12.0, params={"command_name": "motion"})
     effector_target_near = RewTerm(
         func=mdp.effector_target_near,
-        weight=19.0,
-        params={
-            "command_name": "motion",
-            "guidance_radius": 0.4,  # 引导球半径
-            "scale": 10.0,  # 每接近 1cm 奖励 0.1
-        },
-    )
-    
-    # [战术] 躯干朝向目标 - 鼓励正确的攻击姿态
-    effector_face_target = RewTerm(
-        func=mdp.effector_face_target,
-        weight=1.0,
-        params={"command_name": "motion"},
+        weight=8.0,
+        params={"command_name": "motion", "guidance_radius": 0.4, "scale": 10.0},
     )
 
-    effector_velocity_towards_target = RewTerm(
-        func=mdp.effector_velocity_towards_target,
-        weight=2.0,  # 可调整
-        params={
-            "command_name": "motion",
-            "guidance_radius": 0.4,
-        },
+    # Post-hit retract/stance recovery reward.
+    post_hit_return_to_start = RewTerm(
+        func=mdp.post_hit_return_to_start_exp,
+        weight=4.0,
+        params={"command_name": "motion", "std_xy": 0.2},
     )
-    
-    # =========================================================================
-    # Stage 2 收手阶段奖励/惩罚 (Hit 后 0.2~1.0s 冷静期内)
-    # 
-    # 设计原则:
-    # - 只在冷静期内生效，鼓励机器人收手
-    # - 与进攻阶段的 Near 奖励对称设计
-    # - 配合 Mimic 奖励，引导跟随参考动作
-    # =========================================================================
-    
-    # [收手惩罚-小球] 手停留在目标小球内的惩罚
-    # Hit 后 0.2s 开始，如果手还在小球内就惩罚
-    # pen_linger_in_hit_sphere = RewTerm(
-    #     func=mdp.pen_linger_in_hit_sphere,
-    #     weight=0.0,  # 权重为正，函数返回负值
-    #     params={
-    #         "command_name": "motion",
-    #         "grace_period": 0.2,
-    #     },
-    # )
-    
-    # [收手奖励-大球] 手离开目标的进展奖励 (与 Near 对称)
-    # 权重与 Near 相同，形成对称的进攻-收手周期
-    # rew_retract_from_target = RewTerm(
-    #     func=mdp.rew_retract_from_target,
-    #     weight=0.0,  # 与 effector_target_near 相同
-    #     params={
-    #         "command_name": "motion",
-    #         "guidance_radius": 0.4,
-    #         "grace_period": 0.2,
-    #         "scale": 10.0,  # 与 Near 相同
-    #     },
-    # )
-    
-    # =========================================================================
-    # Stage 2 惩罚项 (姿态稳定性)
-    # =========================================================================
-    
-    # [姿态] 惩罚身体过度倾斜
-    posture_unstable = RewTerm(
-        func=mdp.posture_unstable,
-        weight=2000.0,  # 权重为正，函数返回负值
-        params={
-            "command_name": "motion",
-            "tilt_threshold": 0.0097,  # 约8度
-        },
-    )
-    
-    # =========================================================================
-    # Stage 2 调整后的 Mimic 奖励 (保留小权重，维持动作质量)
-    # 原来stage1中以下6个奖励的权重分别为0.5，0.5，1，1，1，1
-    # 设计原因:
-    # - 保留 0.1 的小权重而不是完全设为 0
-    # - 防止长时间 Stage 2 训练后出现多余的移动或奇怪姿态
-    # - cross 数据是原地出拳，不需要大幅移动，所以保留位置约束有意义
-    # =========================================================================
 
+    # Mimic rewards (always active to keep style quality).
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=5.0,  # Stage 2: 跟踪 anchor (torso) 位置，保持机器人不漫游
-        params={"command_name": "motion", "std": 0.25},
+        weight=1.5,
+        params={"command_name": "motion", "std": 0.3},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.5,  # Stage 2: 保留朝向约束
+        weight=0.5,
         params={"command_name": "motion", "std": 0.4},
     )
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,  # Stage 2: 跟踪全身 14 个 body 位置，保持出拳姿态 (必须 > 0!)
+        weight=1.0,
         params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.0,  # Stage 2: 保持关节朝向 (必须 > 0!)
+        weight=1.0,
         params={"command_name": "motion", "std": 0.5},
-    )
-    # 除去右手以外其他11个身体部分link的mimic
-    mimic_non_right_hand_body_pos = RewTerm(
-        func=mdp.mimic_non_right_hand_body_position_error_exp,
-        weight=4.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
-    )
-    # Mimic 非右手身体部分姿态奖励
-    mimic_non_right_hand_body_ori = RewTerm(
-        func=mdp.mimic_non_right_hand_body_orientation_error_exp,
-        weight=4.0,  # 可根据实验调整
-        params={"command_name": "motion", "std": 0.3},
     )
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=1.0,  # Stage 2: 保留速度约束
+        weight=0.5,
         params={"command_name": "motion", "std": 1.0},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=1.0,  # Stage 2: 保留角速度约束
+        weight=0.5,
         params={"command_name": "motion", "std": 3.14},
     )
-    
-    # =========================================================================
-    # 保持不变的正则化惩罚
-    # =========================================================================
-    # 某些时候会出现极大负数值。
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
-    
+
+    # Regularization.
+    posture_unstable = RewTerm(
+        func=mdp.posture_unstable,
+        weight=2.0,
+        params={"command_name": "motion", "tilt_threshold": 0.8},
+    )
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
@@ -544,39 +419,18 @@ class RewardsCfg:
 
 @configclass
 class TerminationsCfg:
-    """Termination terms for the MDP.
-    
-    Stage 2 设计说明:
-    ================
-    Stage 1 (Mimic) 的终止条件基于参考动作的跟踪误差:
-    - anchor_pos: 锚点位置偏差过大
-    - anchor_ori: 锚点朝向偏差过大  
-    - ee_body_pos: 四肢位置偏差过大
-    
-    Stage 2 (Task-Oriented) 不再强约束跟踪参考动作:
-    - 删除上述 mimic 相关的终止条件
-    - 添加物理稳定性检测 (摔倒检测)
-    - 保留 time_out 防止无限循环
-    """
+    """Termination terms for stage-2 training."""
 
-    # 正常超时终止 - 保留
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    
-    # Stage 2: 摔倒检测 - 替代 mimic 相关的终止条件
-    # 条件: 骨盆高度 < 0.3m 或 躯干倾斜角 > ~55度 (cos < 0.57)
+    motion_completed = DoneTerm(func=mdp.motion_completed, params={"command_name": "motion"})
     robot_falling = DoneTerm(
         func=mdp.robot_falling,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "height_threshold": 0.25,   # 骨盆最低高度 (米)
-            "tilt_threshold": 0.57,    # 倾斜余弦阈值 (约55度，cos(55°)≈0.574)
+            "height_threshold": 0.25,
+            "tilt_threshold": 0.57,
         },
     )
-    
-    # [已删除] Stage 1 Mimic 终止条件 - Stage 2 不需要
-    # anchor_pos = DoneTerm(...)  # 锚点位置偏差
-    # anchor_ori = DoneTerm(...)  # 锚点朝向偏差
-    # ee_body_pos = DoneTerm(...) # 四肢位置偏差
 
 
 @configclass
@@ -611,7 +465,8 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         self.decimation = 4
-        self.episode_length_s = 20.0  # Stage 2: 增加到 20 秒，给机器人更多时间尝试击打目标
+        # Fallback timeout; real episode boundary is `motion_completed`.
+        self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation

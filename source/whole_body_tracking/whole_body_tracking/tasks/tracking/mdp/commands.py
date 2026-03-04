@@ -3,9 +3,10 @@ from __future__ import annotations
 import math
 import numpy as np
 import os
+import pathlib
 import torch
 from collections.abc import Sequence
-from dataclasses import MISSING
+from dataclasses import MISSING, field
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation
@@ -44,6 +45,44 @@ if TYPE_CHECKING:
 #     "y": (-0.4, 0.4),    # 左右 ±40cm，覆盖左右出拳
 #     "z": (0.25, 0.5),    # 高度 25-50cm（胸部到下巴高度）
 # }
+
+
+def _normalize_motion_name(motion_file: str) -> str:
+    """
+    Resolve skill name from a motion npz path.
+
+    Examples:
+      artifacts/trim_cross_right_normal_body_2_150:v2/motion.npz -> cross_right_normal_body_2_150
+      iros_motion/npz/trim_hook_left_normal_body2_150.npz -> hook_left_normal_body2_150
+    """
+    motion_path = pathlib.Path(motion_file)
+    if motion_path.name == "motion.npz":
+        raw_name = motion_path.parent.name
+    else:
+        raw_name = motion_path.stem
+    raw_name = raw_name.split(":", 1)[0]
+    if raw_name.startswith("trim_"):
+        raw_name = raw_name[len("trim_") :]
+    return raw_name
+
+
+def _resolve_effector_group(
+    motion_name: str,
+    left_hand_skills: Sequence[str],
+    right_hand_skills: Sequence[str],
+    left_foot_skills: Sequence[str],
+    right_foot_skills: Sequence[str],
+) -> str:
+    """Map motion name to effector group: left_hand/right_hand/left_foot/right_foot."""
+    if motion_name in left_hand_skills:
+        return "left_hand"
+    if motion_name in right_hand_skills:
+        return "right_hand"
+    if motion_name in left_foot_skills:
+        return "left_foot"
+    if motion_name in right_foot_skills:
+        return "right_foot"
+    return "right_hand"
 
 
 class MotionLoader:
@@ -123,129 +162,76 @@ class MotionCommand(CommandTerm):
         # 
         # Stage 2 新增 metrics:
         # - resample_count: 记录目标重采样次数 (用于监控)
-        # - right_hand_to_target_dist: 右手到目标距离 (核心监控指标)
+        # - effector_to_target_dist: 当前攻击肢体到目标距离 (核心监控指标)
         # - effector_speed: 攻击肢体速度 (监控出拳速度)
         # =====================================================================
         self.metrics["resample_count"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["right_hand_to_target_dist"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["effector_to_target_dist"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["effector_speed"] = torch.zeros(self.num_envs, device=self.device)
 
-        # =====================================================================
-        # Stage 2: 目标小球 (Target Sphere) 初始化
-        # 用于 Task-Oriented RL 的击打目标
-        # =====================================================================
-        
-        # 目标小球的世界坐标位置 (num_envs, 3)
+        # Target position in world frame.
         self.target_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
-        
-        # =====================================================================
-        # Stage 2: 累积 Hit 计数器
-        # 
-        # 设计目的:
-        # - 记录每个环境在当前 episode 内成功 Hit 的次数
-        # - 用于更新 strikes_left 观测，让 Critic 区分不同阶段
-        # - Episode 重置时清零，冷静期后重采样时不清零
-        # =====================================================================
+
+        # Episode state for task phase split.
         self.cumulative_hit_count = torch.zeros(self.num_envs, device=self.device)
-        
-        # 获取参考动作第一帧的 Root (Pelvis) 位置和朝向
-        # 这是采样区域的基准位置，在整个 episode 中保持不变
-        self._reference_root_pos_w = self.motion.body_pos_w[0, 0].clone()  # (3,) 第一帧的 pelvis 位置
-        self._reference_root_quat_w = self.motion.body_quat_w[0, 0].clone()  # (4,) 第一帧的 pelvis 朝向
-        
-        # [已注释] 采样范围配置 (课程学习使用，已取消)
-        # self._target_sampling_range = self.cfg.target_sampling_range
-
-        # 引导大球半径 (固定值，用于可视化和奖励)
-        self._guidance_sphere_radius = self.cfg.guidance_sphere_radius
-        
-        # =====================================================================
-        # Stage 2: Hit 检测状态 (每个 env 独立维护)
-        # =====================================================================
-        
-        # 当前仿真时间 (每个 env 独立)
-        # 由 _update_command 更新
-        self.current_time = torch.zeros(self.num_envs, device=self.device)
-        
-        # Hit 距离阈值 (米) - 只用距离判断，不用速度
-        self.hit_distance_threshold = self.cfg.hit_distance_threshold
-        
-        # 攻击肢体索引 (右手手腕)
-        self.effector_body_name = self.cfg.effector_body_name
-        self.effector_index = self.cfg.body_names.index(self.effector_body_name)
-        
-        # =====================================================================
-        # Stage 2: Hit 后延迟重采样机制
-        # 
-        # 设计目的:
-        # - Hit 后目标位置保持 1 秒不变
-        # - 这 1 秒内任务奖励 (Hit/Near/Face/Speed) 全部失效
-        # - 鼓励机器人在奖励消失后跟随参考动作收手 (拿 Mimic 奖励)
-        # - 1 秒后重采样目标位置，任务奖励重新生效
-        # =====================================================================
-        
-        # Hit 后等待重采样的剩余时间 (秒)
-        # > 0 表示正在等待重采样 (任务奖励失效中)
-        # <= 0 表示正常状态 (任务奖励生效)
-        self.hit_resample_timer = torch.zeros(self.num_envs, device=self.device)
-        
-        # Hit 后到重采样的延迟时间 (秒)
-        self.hit_resample_delay = self.cfg.hit_resample_delay
-        
-        # 任务奖励是否生效 (Hit/Near/Face/Speed)
-        # False 表示在 Hit 后的等待期，任务奖励不计算
+        self.has_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.task_rewards_enabled = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-        
-        # 单步时间 (用于累积)
-        self.step_dt = self._env.step_dt
-        
-        # =====================================================================
-        # Stage 2: 进展奖励状态 (Near 奖励)
-        # 
-        # 核心设计:
-        # - 只有当 current_distance < min_historical_distance 时才给奖励
-        # - 手停在原地: 没有奖励 (距离没变近)
-        # - 手绕圈: 没有奖励 (距离没变近)
-        # - 手向目标移动: 有奖励
-        # - 手 Hit 到目标: 距离=0，之后不可能更近，Near 奖励自然归零
-        # 
-        # 这完美解决了蹭分问题！
-        # =====================================================================
-        
-        # 当前 Hit 周期内，手到目标的历史最近距离
-        # 只有比这个距离更近时才给 Near 奖励
-        # Hit 后重采样时重置为一个大值
-        self.min_distance_to_target = torch.full((self.num_envs,), 10.0, device=self.device)
-        
-        # 记录每个环境是否已经进入过引导大球范围
-        # 用于判断是否开始计算进展奖励
-        self.has_entered_guidance_sphere = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        
-        # =====================================================================
-        # Stage 2: 收手阶段状态 (Hit 后冷静期内的奖励/惩罚)
-        # 
-        # 核心设计:
-        # - Hit 后 0~0.2s: 宽限期，不给惩罚/奖励 (允许拳头穿越目标)
-        # - Hit 后 0.2~1.0s: 激励收手
-        #   - 惩罚: 手在目标小球内 → 常量惩罚
-        #   - 奖励: 手离开目标越远越好 → 进展奖励 (与 Near 对称)
-        # =====================================================================
-        
-        # 冷静期内的宽限时间 (秒)
-        # Hit 后 0~grace_period 内不触发收手奖励/惩罚
-        self.retract_grace_period = 0.2
-        
-        # 收手阶段的历史最远距离 (用于进展奖励)
-        # 只有比这个距离更远时才给收手奖励
-        # Hit 时重置为 0 (因为 Hit 时距离接近 0)
-        self.max_distance_from_target = torch.zeros(self.num_envs, device=self.device)
 
-        # =====================================================================
-        # Episode 初始化延迟: 防止 spawn 不稳定瞬间碰到目标
-        # 每个 episode 开始时，目标先隐藏到地下 1.2s，等物理引擎稳定后再出现
-        # =====================================================================
-        self._spawn_target_timer = torch.zeros(self.num_envs, device=self.device)
-        self._spawn_target_delay = self.cfg.spawn_target_delay
+        # Camera-visibility simulation:
+        # Agent sees target only for a short random window at episode start.
+        self.target_visible_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.target_visible_time_left = torch.zeros(self.num_envs, device=self.device)
+        self.hidden_target_obs_local = torch.tensor(self.cfg.hidden_target_obs_local, device=self.device, dtype=torch.float32)
+
+        # Reference root from the first motion frame (used by fixed target sampling).
+        self._reference_root_pos_w = self.motion.body_pos_w[0, 0].clone()
+        self._reference_root_quat_w = self.motion.body_quat_w[0, 0].clone()
+        self._guidance_sphere_radius = self.cfg.guidance_sphere_radius
+        self.hit_distance_threshold = self.cfg.hit_distance_threshold
+        self.step_dt = self._env.step_dt
+        self.current_time = torch.zeros(self.num_envs, device=self.device)
+
+        # Unified effector setup: infer skill from motion name, then map to active effector.
+        self.motion_name = _normalize_motion_name(self.cfg.motion_file)
+        self.effector_group = _resolve_effector_group(
+            self.motion_name,
+            self.cfg.left_hand_skill_names,
+            self.cfg.right_hand_skill_names,
+            self.cfg.left_foot_skill_names,
+            self.cfg.right_foot_skill_names,
+        )
+        effector_name_map = {
+            "left_hand": "left_wrist_yaw_link",
+            "right_hand": "right_wrist_yaw_link",
+            "left_foot": "left_ankle_roll_link",
+            "right_foot": "right_ankle_roll_link",
+        }
+        one_hot_map = {
+            "left_hand": [1.0, 0.0, 0.0, 0.0],
+            "right_hand": [0.0, 1.0, 0.0, 0.0],
+            "left_foot": [0.0, 0.0, 1.0, 0.0],
+            "right_foot": [0.0, 0.0, 0.0, 1.0],
+        }
+        self.effector_body_name = effector_name_map[self.effector_group]
+        self.effector_index = self.cfg.body_names.index(self.effector_body_name)
+        self.active_effector_one_hot = torch.tensor(
+            one_hot_map[self.effector_group], dtype=torch.float32, device=self.device
+        ).repeat(self.num_envs, 1)
+
+        # Hit can only be triggered by hands/feet end effectors.
+        self.hit_effector_indices = torch.tensor(
+            [self.cfg.body_names.index(name) for name in self.cfg.hit_effector_body_names],
+            dtype=torch.long,
+            device=self.device,
+        )
+
+        # Post-hit retract reward uses distance to episode start anchor.
+        self.episode_start_anchor_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+
+        # Pre-hit near reward state.
+        self.min_distance_to_target = torch.full((self.num_envs,), 10.0, device=self.device)
+        self.has_entered_guidance_sphere = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.max_distance_from_target = torch.zeros(self.num_envs, device=self.device)
 
         # =====================================================================
         # [已注释] 课程学习状态 (已取消，改为固定目标点训练)
@@ -289,195 +275,107 @@ class MotionCommand(CommandTerm):
     
     def _resample_target_positions(self, env_ids: torch.Tensor):
         """
-        为指定环境设置固定目标位置 (已取消课程学习随机采样)
+        Sample target around a fixed local center with per-axis randomization.
 
-        目标位置由 cfg.fixed_target_local_pos 配置，相对于参考动作第一帧 Root 的局部坐标系。
-        所有 env 使用相同的局部偏移，加上各自的 env_origin 实现独立定位。
-
-        Args:
-            env_ids: 需要重置目标位置的环境索引
+        This updates the *real* target in world coordinates. The observation-side visibility
+        is handled separately by target_visible_mask/target_visible_time_left.
         """
         if len(env_ids) == 0:
             return
 
         num_samples = len(env_ids)
-
-        # 固定局部坐标 (相对于参考动作第一帧 Root/Pelvis)
         fx, fy, fz = self.cfg.fixed_target_local_pos
-        local_target_pos = torch.tensor(
-            [[fx, fy, fz]], dtype=torch.float32, device=self.device
-        ).repeat(num_samples, 1)  # (num_samples, 3)
+        local_target_pos = torch.tensor([[fx, fy, fz]], dtype=torch.float32, device=self.device).repeat(num_samples, 1)
 
-        # 将局部坐标转换到世界坐标系
-        # world_pos = root_pos + quat_apply(root_quat, local_pos)
+        ranges = self.cfg.target_randomization_local_range
+        rx = sample_uniform(ranges["x"][0], ranges["x"][1], (num_samples,), device=self.device)
+        ry = sample_uniform(ranges["y"][0], ranges["y"][1], (num_samples,), device=self.device)
+        rz = sample_uniform(ranges["z"][0], ranges["z"][1], (num_samples,), device=self.device)
+        local_target_pos[:, 0] += rx
+        local_target_pos[:, 1] += ry
+        local_target_pos[:, 2] += rz
+
         world_target_pos = self._reference_root_pos_w + quat_apply(
             self._reference_root_quat_w.unsqueeze(0).repeat(num_samples, 1),
             local_target_pos,
         )
-
-        # 加上各环境的 origin 偏移
         world_target_pos = world_target_pos + self._env.scene.env_origins[env_ids]
-
-        # 更新目标位置
         self.target_pos_w[env_ids] = world_target_pos
 
-        # 重置被采样环境的任务奖励状态
+        # Reset episode-level task state.
         self.task_rewards_enabled[env_ids] = True
-        self.hit_resample_timer[env_ids] = 0.0
-
-        # 重置进展奖励状态 (min_distance 重置为大值，让新目标可以触发进展奖励)
+        self.has_hit[env_ids] = False
         self.min_distance_to_target[env_ids] = 10.0
-
-        # 重置引导球进入状态
         self.has_entered_guidance_sphere[env_ids] = False
-
-        # 重置收手阶段状态
         self.max_distance_from_target[env_ids] = 0.0
+
+        # Sample the short "target visible" window (camera sees target briefly).
+        t_min, t_max = self.cfg.target_visible_time_range_s
+        self.target_visible_time_left[env_ids] = sample_uniform(t_min, t_max, (num_samples,), device=self.device)
+        self.target_visible_mask[env_ids] = True
 
     def _delayed_spawn_target(self, env_ids: torch.Tensor):
         """
-        Episode 重置时调用: 将目标暂时放到地下，启动 spawn 延迟计时器
+        Backward-compatible wrapper.
 
-        机制:
-        - 目标立即移到 z=-10m (地下)，任务奖励禁用
-        - _spawn_target_timer 开始倒计时 (spawn_target_delay 秒)
-        - update_hit_resample_timer() 每步检测计时器是否到期
-        - 到期后调用 _resample_target_positions() 让目标正式出现
-
-        目的:
-        - 避免 episode 初始化时的物理引擎不稳定 (速度随机噪声导致抖动)
-          意外触发 hit 检测，让网络学到不应该学的奖励
-
-        Args:
-            env_ids: 需要处理的环境索引
+        Old stage-2 code used delayed spawn; current design spawns target immediately
+        and controls only *observation visibility* using a short time window.
         """
-        if len(env_ids) == 0:
-            return
-
-        # 将目标移到地下 (与 hit 后冷静期一致的策略)
-        underground_pos = torch.zeros(len(env_ids), 3, device=self.device)
-        underground_pos[:, 2] = -10.0
-        self.target_pos_w[env_ids] = underground_pos + self._env.scene.env_origins[env_ids]
-
-        # 禁用任务奖励
-        self.task_rewards_enabled[env_ids] = False
-
-        # 清零 hit 冷静期计时器 (新 episode，不继承上个 episode 的冷静期)
-        self.hit_resample_timer[env_ids] = 0.0
-
-        # 重置进展奖励状态
-        self.min_distance_to_target[env_ids] = 10.0
-        self.has_entered_guidance_sphere[env_ids] = False
-        self.max_distance_from_target[env_ids] = 0.0
-
-        # 启动 spawn 延迟计时器
-        self._spawn_target_timer[env_ids] = self._spawn_target_delay
+        self._resample_target_positions(env_ids)
 
     def check_hit(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
         检查是否发生有效 Hit
-        
-        新设计 (简化版):
-        ==================
-        Hit 条件: 只看距离，不看速度和冷却
-        - effector 到 target 的距离 < hit_distance_threshold
-        - 任务奖励处于生效状态 (不在 Hit 后的等待期)
-        
-        Hit 后机制:
-        - 不立即重采样，而是启动 1 秒延迟计时器
-        - 这 1 秒内任务奖励失效 (Hit/Near/Face/Speed)
-        - 机器人在此期间跟随参考动作收手，获得 Mimic 奖励
-        - 1 秒后自动重采样目标位置，任务奖励重新生效
+
+        规则:
+        - 仅四个攻击末端 (双手/双脚) 可触发 hit
+        - 距离阈值: hit_distance_threshold
+        - 每个 episode 只记录首次 hit
+
+        Hit 后:
+        - 目标物理位置不变
+        - 任务奖励开关关闭 (near/hit 停止)
+        - 目标观测立刻隐藏，模拟相机看不到目标
         
         Returns:
             hit_mask: (num_envs,) bool, 哪些环境发生了有效 Hit
-            distances: (num_envs,) float, effector 到 target 的距离
+            distances: (num_envs,) float, 最近攻击末端到 target 的距离
         """
-        # 获取攻击肢体的位置
-        effector_pos_w = self.robot_body_pos_w[:, self.effector_index]  # (num_envs, 3)
-        
-        # 计算距离
-        distances = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
-        
-        # Hit 条件: 距离达标 且 任务奖励生效中
-        dist_ok = distances < self.hit_distance_threshold
-        hit_mask = dist_ok & self.task_rewards_enabled
-        
-        # =====================================================================
-        # Hit 成功后: 启动延迟重采样计时器，禁用任务奖励，初始化收手状态
-        # =====================================================================
+        # Hit can only be triggered by hand/foot end effectors.
+        effector_positions = self.robot_body_pos_w[:, self.hit_effector_indices]  # (num_envs, K, 3)
+        target_positions = self.target_pos_w[:, None, :]  # (num_envs, 1, 3)
+        distances_all = torch.norm(effector_positions - target_positions, dim=-1)  # (num_envs, K)
+        min_distances, _ = torch.min(distances_all, dim=-1)  # (num_envs,)
+
+        # Hit only once per episode.
+        dist_ok = min_distances < self.hit_distance_threshold
+        hit_mask = dist_ok & self.task_rewards_enabled & (~self.has_hit)
+
         hit_env_ids = torch.where(hit_mask)[0]
         if len(hit_env_ids) > 0:
-            # 启动延迟计时器
-            self.hit_resample_timer[hit_env_ids] = self.hit_resample_delay
-            # 禁用任务奖励
+            self.has_hit[hit_env_ids] = True
             self.task_rewards_enabled[hit_env_ids] = False
-            # 初始化收手阶段的历史最远距离 (从当前距离开始，因为 Hit 时距离接近 0)
-            self.max_distance_from_target[hit_env_ids] = distances[hit_env_ids]
-            
-            # =========================================================================
-            # Stage 2: Hit 成功后的观测更新
-            # =========================================================================
-            
-            # (1) 递增累积 Hit 计数器
-            # - 让 strikes_left 观测值变化，Critic 知道"我已经 Hit 过了"
-            # - Episode 内累积，重置时清零
             self.cumulative_hit_count[hit_env_ids] += 1.0
-            
-            # (2) 将 target_pos_w 设置到地下深处 [0, 0, -10]
-            # - 表示"当前没有攻击目标"
-            # - 在机器人局部坐标系中，Z=-10 表示地下 10 米
-            # - Critic 学到: target_pos 在地下 = 冷静期，没有 Hit 奖励
-            # - 注意: 需要加上 env_origin 偏移
-            underground_pos = torch.zeros(len(hit_env_ids), 3, device=self.device)
-            underground_pos[:, 2] = -10.0  # Z = -10 (地下)
-            self.target_pos_w[hit_env_ids] = underground_pos + self._env.scene.env_origins[hit_env_ids]
-        
-        return hit_mask, distances
+            self.max_distance_from_target[hit_env_ids] = min_distances[hit_env_ids]
+
+            # After hit: target still exists physically, but observation is hidden to the agent.
+            self.target_visible_mask[hit_env_ids] = False
+            self.target_visible_time_left[hit_env_ids] = 0.0
+
+        return hit_mask, min_distances
     
     def update_hit_resample_timer(self):
         """
-        更新 Hit 后的延迟重采样计时器
-        
-        每个 step 调用一次:
-        - 减少计时器
-        - 计时器归零时触发重采样并重新启用任务奖励
+        Update short target-visibility window (camera observation simulation).
+
+        Real target stays fixed for the whole episode. Only the observation switches to
+        hidden marker after visibility window expires or after hit.
         """
-        # 找出正在等待重采样的环境
-        waiting_mask = self.hit_resample_timer > 0
-        
-        # 减少计时器
-        self.hit_resample_timer = torch.where(
-            waiting_mask,
-            self.hit_resample_timer - self.step_dt,
-            self.hit_resample_timer
-        )
-        
-        # 检查哪些环境的计时器刚刚归零 (需要重采样)
-        timer_just_expired = (self.hit_resample_timer <= 0) & waiting_mask
-        resample_env_ids = torch.where(timer_just_expired)[0]
-        
-        if len(resample_env_ids) > 0:
-            self._resample_target_positions(resample_env_ids)
-
-        # =====================================================================
-        # Spawn 延迟计时器: Episode 初始化后等待物理引擎稳定再显示目标
-        # =====================================================================
-        spawn_waiting = self._spawn_target_timer > 0
-
-        # 减少 spawn 计时器
-        self._spawn_target_timer = torch.where(
-            spawn_waiting,
-            self._spawn_target_timer - self.step_dt,
-            self._spawn_target_timer,
-        )
-
-        # 检查哪些环境的 spawn 计时器刚刚到期
-        spawn_just_expired = (self._spawn_target_timer <= 0) & spawn_waiting
-        spawn_env_ids = torch.where(spawn_just_expired)[0]
-
-        if len(spawn_env_ids) > 0:
-            self._resample_target_positions(spawn_env_ids)
+        visible_and_not_hit = self.target_visible_mask & (~self.has_hit)
+        if torch.any(visible_and_not_hit):
+            self.target_visible_time_left[visible_and_not_hit] -= self.step_dt
+            expired = visible_and_not_hit & (self.target_visible_time_left <= 0.0)
+            self.target_visible_mask[expired] = False
 
     def update_curriculum(self, hit_mask: torch.Tensor):
         """
@@ -607,6 +505,10 @@ class MotionCommand(CommandTerm):
     def robot_anchor_ang_vel_w(self) -> torch.Tensor:
         return self.robot.data.body_ang_vel_w[:, self.robot_anchor_body_index]
 
+    @property
+    def target_is_visible(self) -> torch.Tensor:
+        return self.target_visible_mask & (~self.has_hit)
+
     def _update_metrics(self):
         self.metrics["error_anchor_pos"] = torch.norm(self.anchor_pos_w - self.robot_anchor_pos_w, dim=-1)
         self.metrics["error_anchor_rot"] = quat_error_magnitude(self.anchor_quat_w, self.robot_anchor_quat_w)
@@ -630,30 +532,11 @@ class MotionCommand(CommandTerm):
         self.metrics["error_joint_pos"] = torch.norm(self.joint_pos - self.robot_joint_pos, dim=-1)
         self.metrics["error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
         
-        # =====================================================================
-        # Stage 2: 手部速度监控 (方法2 - 记录到 wandb)
-        # 用于分析训练过程中手部速度的变化趋势
-        # =====================================================================
-        
-        # 获取右手 (right_wrist_yaw_link) 的速度
-        right_wrist_idx = self.cfg.body_names.index("right_wrist_yaw_link")
-        right_hand_lin_vel_w = self.robot_body_lin_vel_w[:, right_wrist_idx]  # (num_envs, 3)
-        right_hand_speed = torch.norm(right_hand_lin_vel_w, dim=-1)  # (num_envs,) 标量速度 m/s
-        
-        # 获取左手 (left_wrist_yaw_link) 的速度
-        left_wrist_idx = self.cfg.body_names.index("left_wrist_yaw_link")
-        left_hand_lin_vel_w = self.robot_body_lin_vel_w[:, left_wrist_idx]  # (num_envs, 3)
-        left_hand_speed = torch.norm(left_hand_lin_vel_w, dim=-1)  # (num_envs,) 标量速度 m/s
-        
-        # 记录到 metrics (会自动上传到 wandb)
-        self.metrics["right_hand_speed"] = right_hand_speed  # 右手速度 (m/s)
-        self.metrics["left_hand_speed"] = left_hand_speed    # 左手速度 (m/s)
-        self.metrics["max_hand_speed"] = torch.max(right_hand_speed, left_hand_speed)  # 双手最大速度
-        
-        # 计算手部到目标的距离 (用于分析 hit 奖励的触发条件)
-        right_hand_pos_w = self.robot_body_pos_w[:, right_wrist_idx]  # (num_envs, 3)
-        dist_to_target = torch.norm(right_hand_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
-        self.metrics["right_hand_to_target_dist"] = dist_to_target  # 右手到目标的距离 (m)
+        # Stage-2 monitoring metrics (active effector driven).
+        effector_lin_vel_w = self.robot_body_lin_vel_w[:, self.effector_index]
+        effector_pos_w = self.robot_body_pos_w[:, self.effector_index]
+        self.metrics["effector_speed"] = torch.norm(effector_lin_vel_w, dim=-1)
+        self.metrics["effector_to_target_dist"] = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
         """
@@ -698,7 +581,7 @@ class MotionCommand(CommandTerm):
         
         # Stage 2 专用 metrics: 记录采样事件
         # 由于固定从 frame 0 开始，这里只记录发生了重采样
-        self.metrics["resample_count"][:] = self.metrics.get("resample_count", torch.zeros(self.num_envs, device=self.device)) + len(env_ids) / self.num_envs
+        self.metrics["resample_count"][env_ids] += 1.0
 
     def _resample_command(self, env_ids: Sequence[int]):
         """Episode 重置时调用，重新采样动作和目标位置"""
@@ -706,19 +589,11 @@ class MotionCommand(CommandTerm):
             return
         self._adaptive_sampling(env_ids)
 
-        # Stage 2: Episode 重置时使用延迟 spawn (1.2s 后目标才出现)
-        # 避免 spawn 不稳定瞬间意外触发 hit 检测
-        env_ids_tensor = torch.tensor(env_ids, device=self.device, dtype=torch.long)
-        self._delayed_spawn_target(env_ids_tensor)
+        env_ids_tensor = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        self._resample_target_positions(env_ids_tensor)
 
-        # =====================================================================
-        # Stage 2: Episode 重置时清零累积 Hit 计数器
-        #
-        # 注意区分两种重采样:
-        # - _resample_command(): Episode 重置，需要清零累积计数
-        # - _resample_target_positions(): 冷静期后重采样，不清零累积计数
-        # =====================================================================
         self.cumulative_hit_count[env_ids_tensor] = 0.0
+        self.current_time[env_ids_tensor] = 0.0
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -750,6 +625,7 @@ class MotionCommand(CommandTerm):
             torch.cat([root_pos[env_ids], root_ori[env_ids], root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1),
             env_ids=env_ids,
         )
+        self.episode_start_anchor_pos_w[env_ids_tensor] = root_pos[env_ids_tensor]
 
     def _update_command(self):
         self.time_steps += 1
@@ -758,9 +634,10 @@ class MotionCommand(CommandTerm):
         # dt = decimation * sim.dt
         dt = self._env.cfg.decimation * self._env.cfg.sim.dt
         self.current_time += dt
-        
-        env_ids = torch.where(self.time_steps >= self.motion.time_step_total)[0]
-        self._resample_command(env_ids)
+        self.update_hit_resample_timer()
+
+        # Keep last reference frame until environment reset.
+        self.time_steps = torch.clamp(self.time_steps, max=self.motion.time_step_total - 1)
 
         anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
         anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
@@ -791,7 +668,7 @@ class MotionCommand(CommandTerm):
         distances = torch.norm(effector_pos_w - self.target_pos_w, dim=-1)  # (num_envs,)
         speeds = torch.norm(effector_vel_w, dim=-1)  # (num_envs,)
         
-        self.metrics["right_hand_to_target_dist"][:] = distances
+        self.metrics["effector_to_target_dist"][:] = distances
         self.metrics["effector_speed"][:] = speeds
 
     def _set_debug_vis_impl(self, debug_vis: bool):
@@ -1126,21 +1003,41 @@ class MotionCommandCfg(CommandTermCfg):
     # 引导大球半径 (固定值，用于可视化奖励生效范围)
     guidance_sphere_radius: float = 0.4
 
-    # =========================================================================
-    # Hit 检测配置
-    # =========================================================================
+    # Target randomization around fixed local center for sim2real robustness.
+    target_randomization_local_range: dict[str, tuple[float, float]] = field(
+        default_factory=lambda: {
+            "x": (-0.2, 0.2),
+            "y": (-0.2, 0.2),
+            "z": (-0.2, 0.2),
+        }
+    )
 
-    # Hit 距离阈值 (米) - 对应目标小球半径
-    hit_distance_threshold: float = 0.1
+    # Agent can see target only for a short random window at episode start.
+    target_visible_time_range_s: tuple[float, float] = (0.3, 0.8)
+    hidden_target_obs_local: tuple[float, float, float] = (0.0, 0.0, -10.0)
 
-    # Hit 后延迟重置时间 (秒): 这段时间任务奖励失效，鼓励机器人收拳跟随参考动作
-    hit_resample_delay: float = 1.8
+    # Hit is valid only for these end-effectors.
+    hit_effector_body_names: tuple[str, ...] = (
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+    )
 
-    # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
-    spawn_target_delay: float = 1.0
+    # Active-effector mapping by motion name (single source of truth).
+    left_hand_skill_names: tuple[str, ...] = ("hook_left_normal_body2_150",)
+    right_hand_skill_names: tuple[str, ...] = (
+        "cross_right_normal_body_2_150",
+        "swing_right_normal_head2_150",
+    )
+    left_foot_skill_names: tuple[str, ...] = ("roundhouse_left_normal_mid_no_bag_1_150",)
+    right_foot_skill_names: tuple[str, ...] = (
+        "frontkick_right_fast_body_no_bag_2_150",
+        "roundhouse_right_normal_mid_no_bag_2_150",
+    )
 
-    # 攻击肢体名称
-    effector_body_name: str = "right_wrist_yaw_link"
+    # Hit distance threshold (target sphere radius).
+    hit_distance_threshold: float = 0.06
 
     # [已注释] 课程学习配置
     # curriculum_level_step: float = 0.25
@@ -1152,7 +1049,7 @@ class MotionCommandCfg(CommandTermCfg):
         prim_path="/Visuals/Command/target_sphere",
         markers={
             "sphere": sim_utils.SphereCfg(
-                radius=0.1,  # 半径 6cm，与 hit_distance_threshold 一致
+                radius=0.06,  # 半径 6cm，与 hit_distance_threshold 一致
                 visual_material=sim_utils.PreviewSurfaceCfg(
                     diffuse_color=(1.0, 0.2, 0.2),  # 红色
                     opacity=0.9,

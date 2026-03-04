@@ -114,3 +114,13 @@ def robot_falling(
     too_tilted = dot_with_world_up < tilt_threshold
     
     return height_too_low | too_tilted
+
+
+def motion_completed(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """
+    Terminate episode when one full motion clip is completed.
+
+    This makes one trimmed motion correspond to one episode.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.time_steps >= (command.motion.time_step_total - 1)

@@ -4,6 +4,7 @@
 
 import argparse
 import sys
+from dataclasses import MISSING
 
 from isaaclab.app import AppLauncher
 
@@ -20,6 +21,8 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
+parser.add_argument("--registry_name", type=str, default=None, help="WandB registry artifact name for motion.")
+parser.add_argument("--eval_strict", action="store_true", default=False, help="Disable eval-time noise/push randomization.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -68,9 +71,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
+    if args_cli.eval_strict:
+        if hasattr(env_cfg.observations, "policy"):
+            env_cfg.observations.policy.enable_corruption = False
+        if hasattr(env_cfg.observations, "critic"):
+            env_cfg.observations.critic.enable_corruption = False
+        if hasattr(env_cfg, "events") and hasattr(env_cfg.events, "push_robot"):
+            env_cfg.events.push_robot = None
+
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
+
+    motion_file_path = args_cli.motion_file
+    if args_cli.registry_name:
+        import wandb
+
+        registry_name = args_cli.registry_name
+        if ":" not in registry_name:
+            registry_name += ":latest"
+        artifact = wandb.Api().artifact(registry_name)
+        motion_file_path = str(pathlib.Path(artifact.download()) / "motion.npz")
+        print(f"[INFO]: Using motion from registry: {registry_name}")
 
     if args_cli.wandb_path:
         import wandb
@@ -94,21 +116,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         print(f"[INFO]: Loading model checkpoint from: {run_path}/{file}")
         resume_path = f"./logs/rsl_rl/temp/{file}"
-
-        if args_cli.motion_file is not None:
-            print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
-            env_cfg.commands.motion.motion_file = args_cli.motion_file
-
-        art = next((a for a in wandb_run.used_artifacts() if a.type == "motions"), None)
-        if art is None:
-            print("[WARN] No model artifact found in the run.")
-        else:
-            env_cfg.commands.motion.motion_file = str(pathlib.Path(art.download()) / "motion.npz")
+        if motion_file_path is None:
+            arts = [a for a in wandb_run.used_artifacts() if "motion" in a.type.lower()]
+            art = arts[0] if arts else None
+            if art is not None:
+                motion_file_path = str(pathlib.Path(art.download()) / "motion.npz")
+            else:
+                print("[WARN] No motion artifact found in run; keep CLI/config motion file.")
 
     else:
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+
+    if motion_file_path is not None:
+        print(f"[INFO]: Using motion file: {motion_file_path}")
+        env_cfg.commands.motion.motion_file = motion_file_path
+
+    if env_cfg.commands.motion.motion_file is MISSING:
+        raise ValueError(
+            "No motion file configured. Please provide one of: "
+            "--motion_file, --registry_name, or a wandb run with used motion artifact."
+        )
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

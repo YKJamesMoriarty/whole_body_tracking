@@ -20,13 +20,13 @@ def robot_anchor_ori_w(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
 def robot_anchor_lin_vel_w(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
 
-    return command.robot_anchor_vel_w[:, :3].view(env.num_envs, -1)
+    return command.robot_anchor_lin_vel_w.view(env.num_envs, -1)
 
 
 def robot_anchor_ang_vel_w(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
 
-    return command.robot_anchor_vel_w[:, 3:6].view(env.num_envs, -1)
+    return command.robot_anchor_ang_vel_w.view(env.num_envs, -1)
 
 
 def robot_body_pos_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
@@ -114,10 +114,10 @@ def target_relative_position(env: ManagerBasedEnv, command_name: str) -> torch.T
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     
-    # Stage 2: 使用随机采样的目标位置
-    # target_pos_w 是在 commands.py 中根据课程学习动态采样的目标点
-    # 这个目标点也会用于可视化 (红色目标球) 和 Hit 检测
-    target_pos_w = command.target_pos_w  # (num_envs, 3) 世界坐标
+    # Stage 2: real target exists all the time, but observation is visible only briefly
+    # at episode start. After that (or after hit), observation is hidden to simulate
+    # camera losing target.
+    target_pos_w = command.target_pos_w
     
     # 获取机器人 Root (Pelvis) 的世界坐标位置和朝向
     robot_root_pos_w = command.robot_anchor_pos_w   # (num_envs, 3)
@@ -125,14 +125,16 @@ def target_relative_position(env: ManagerBasedEnv, command_name: str) -> torch.T
     
     # 将目标位置从世界坐标系转换到机器人局部坐标系
     # 数学公式: p_local = R_robot^(-1) * (p_target_world - p_robot_world)
-    target_pos_b, _ = subtract_frame_transforms(
+    target_pos_b_visible, _ = subtract_frame_transforms(
         robot_root_pos_w,
         robot_root_quat_w,
         target_pos_w,
         torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=env.device).repeat(env.num_envs, 1),
     )
-    
-    return target_pos_b.view(env.num_envs, 3)
+
+    hidden_obs = command.hidden_target_obs_local.unsqueeze(0).repeat(env.num_envs, 1)
+    visible_mask = command.target_is_visible.unsqueeze(1)
+    return torch.where(visible_mask, target_pos_b_visible.view(env.num_envs, 3), hidden_obs)
 
 
 def target_relative_velocity(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
@@ -222,17 +224,8 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
     Returns:
         Tensor (num_envs, 4): One-Hot 编码的活跃肢体
     """
-    # Stage 1: 假设所有攻击都是右手出拳
-    # 格式: [左手, 右手, 左脚, 右脚]
-    one_hot = torch.zeros(env.num_envs, 4, device=env.device)
-    one_hot[:, 1] = 1.0  # 左手0，右手1，左脚2，右脚3
-    
-    # Stage 2 TODO: 根据以下信息动态确定活跃肢体:
-    #   - 动作文件名 (例如: "cross" -> 右手, "hook_left" -> 左手)
-    #   - 技能命令输入
-    #   - 当前动作的阶段
-    
-    return one_hot
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.active_effector_one_hot
 
 
 def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
@@ -255,35 +248,5 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     Returns:
         Tensor (num_envs, 16): One-Hot 编码的技能类型
     """
-    # 技能索引对照表 (16 维):
-    # ===== 拳法 (0-5) =====
-    # 0: r-Cross (右直拳)
-    # 1: r-swing (右摆拳)
-    # 2: roundhouse_right_normal_low (右-低位鞭腿)
-    # 3: roundhouse_right_fast_high (右-高位鞭腿)
-    # 4: frontkick_right_normal_body (右脚前蹬)
-
-    # 5: Overhand (砸拳)
-    # ===== 腿法 (6-11) =====
-    # 6: LowKick (低扫腿)
-    # 7: MidKick (中段踢)
-    # 8: HighKick (高踢)
-    # 9: FrontKick (前踢)
-    # 10: SideKick (侧踢)
-    # 11: RoundhouseKick (回旋踢)
-    # ===== 组合/特殊 (12-15) =====
-    # 12: Combo1 (组合1)
-    # 13: Combo2 (组合2)
-    # 14: 预留
-    # 15: 预留
-    
-    one_hot = torch.zeros(env.num_envs, 16, device=env.device)
-    # 右直拳0，右摆拳1，右低位鞭腿2，右高位鞭腿3，右脚前蹬4
-    one_hot[:, 0] = 1.0  # 例如 one_hot[:, 0] = 1.0 为 直拳 (Stage 1)
-    
-    # Stage 2 TODO: 从以下来源解析技能类型:
-    #   - 动作文件名 (例如: "cross_right_normal" -> Cross)
-    #   - 外部技能命令
-    #   - Registry 元数据
-    
-    return one_hot
+    # Keep this channel but zero it out to avoid meaningless fixed features.
+    return torch.zeros(env.num_envs, 16, device=env.device)
