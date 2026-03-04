@@ -31,10 +31,10 @@
 │  Stage 2: Task-Oriented RL                                              │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━│
 │  目标: 学习精准击打目标                                                   │
-│  输入: Stage 1 预训练权重 + 目标小球位置                                   │
+│  输入: Stage 1 预训练权重 + 固定点附近随机目标                              │
 │  输出: 能够击打任意位置目标的策略                                          │
-│  奖励: Hit 奖励 + 引导奖励 + 弱化的 Mimic 奖励 + 反蹭分惩罚                 │
-│  课程: 目标采样范围从小到大 (4个等级: 0%, 25%, 50%, 75%, 100%)             │
+│  奖励: hit前(near+hit) + hit后(回位) + 全程mimic                            │
+│  观测: 开局短时可见目标，随后隐藏，学习“看一眼后闭眼击打”                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -144,30 +144,26 @@ python scripts/rsl_rl/train.py --task=Tracking-Flat-G1-v0 \
 
 | 特性 | 说明 |
 |------|------|
-| **Hit 检测** | 距离 < 6cm + 速度 > 0.5m/s + 冷却 > 0.5s |
-| **Hit 后目标重采样** | 击中后目标立即移动到新位置，防止蹭分 |
-| **一次性引导奖励** | 首次进入引导球 (25cm) 给予奖励，不重复给 |
-| **指数停留惩罚** | 手在目标范围内停留 >0.1s 后惩罚指数增长 |
-| **课程学习** | 目标采样范围从中心点逐渐扩大到完整范围 |
+| **固定目标 + 随机扰动** | 每个 episode 在固定中心点附近 (`±0.2m`) 采样目标 |
+| **短时可见观测** | 目标仅在 episode 开始 `0.3-0.8s` 可见，之后观测隐藏为 `(0,0,-10)` |
+| **两阶段奖励** | hit 前使用 `near + hit` 任务奖励；hit 后关闭任务奖励，仅保留 mimic + 回位奖励 |
+| **Hit 有效部位约束** | 仅四个末端可触发 hit：左右手腕、左右脚踝 |
+| **单动作单回合** | 通过 `motion_completed` 终止条件，使一个裁剪动作对应一个 episode |
 
 **Stage 2 奖励配置：**
 
 ```
 任务奖励:
-  - effector_target_hit:      4.0   (击中目标)
-  - effector_target_near:     2.0   (一次性进入引导球)
-  - effector_face_target:     0.75  (面向目标)
-  - effector_hit_speed_bonus: 1.5   (高速击中奖励)
+  - effector_target_hit:      12.0  (有效 hit 脉冲奖励)
+  - effector_target_near:      8.0  (靠近目标进展奖励，hit 前有效)
 
-任务惩罚:
-  - pen_touch_lazy:   2.0  (低速进入惩罚)
-  - pen_lingering:    1.0  (指数停留惩罚)
-  - posture_unstable: 1.0  (姿态不稳惩罚)
+Hit 后奖励:
+  - post_hit_return_to_start:  4.0  (鼓励回到起始位置)
 
-Mimic 奖励 (弱化保留):
-  - motion_body_pos/ori:    1.0   (身体位置/朝向)
-  - motion_anchor_pos/ori:  0.5   (锚点位置/朝向)
-  - motion_body_lin/ang_vel: 0.7  (速度)
+Mimic 奖励 (全程保留):
+  - motion_anchor_pos/ori
+  - motion_body_pos/ori
+  - motion_body_lin/ang_vel
 
 正则化惩罚 (Stage 1 & 2 共用):
   - action_rate_l2:     -0.1  (动作平滑，惩罚动作变化过大)
@@ -180,7 +176,10 @@ Mimic 奖励 (弱化保留):
 - Play the trained policy by the following command:
 
 ```bash
-python scripts/rsl_rl/play.py --task=Tracking-Flat-G1-v0 --num_envs=2 --wandb_path={wandb-run-path}
+python scripts/rsl_rl/play.py --task=Tracking-Flat-G1-v0 --num_envs=2 \
+  --wandb_path={wandb-run-path} \
+  --registry_name {your-organization}-org/wandb-registry-motions/{motion_name}:latest \
+  --eval_strict
 ```
 
 The WandB run path can be located in the run overview. It follows the format {your_organization}/{project_name}/ along
@@ -209,21 +208,20 @@ Below is an overview of the code structure for this repository:
 - 初始状态随机化: 随机选择动作帧作为 episode 起点
 
 **Stage 2 功能 (Task-Oriented RL):**
-- **目标小球采样**: `_resample_target_positions()` 在局部坐标系中随机采样目标位置
-- **课程学习**: `update_curriculum()` 根据 Hit 率动态扩大采样范围 (4个等级: 0%, 25%, 50%, 75%, 100%)
-- **Hit 检测**: `check_hit()` 检测有效击中 (距离<6cm + 速度>0.5m/s + 冷却>0.5s)
-- **Hit 后目标重采样**: 成功击中后目标立即移动到新位置
-- **防蹭分状态**: `time_near_target` (停留时间), `has_entered_guidance_sphere` (引导球进入状态)
-- **可视化**: 目标小球 (红色)、引导大球 (绿色半透明)、采样区域线框
+- **固定点随机采样**: `_resample_target_positions()` 在固定中心点附近采样真实目标位置
+- **短时可见机制**: `target_visible_time_range_s` 控制开局可见窗口，之后观测隐藏
+- **Hit 分阶段开关**: `check_hit()` 后关闭任务奖励，仅保留 mimic 与 post-hit 回位奖励
+- **有效末端约束**: 仅四个末端 (双手/双脚) 触发 hit 判定
+- **可维护的末端映射**: 根据 motion 名自动映射 active effector one-hot
+- **可视化**: 目标小球和引导球线框调试显示
 
 **关键配置 (`MotionCommandCfg`):**
 ```python
 hit_distance_threshold = 0.06     # Hit 距离阈值 (米)
-hit_speed_threshold = 0.5         # Hit 速度阈值 (米/秒)
-hit_cooldown = 0.5                # Hit 冷却时间 (秒)
-guidance_sphere_radius = 0.25     # 引导球半径 (米)
-curriculum_window_size = 500      # 课程学习滑动窗口大小
-curriculum_hit_rate_threshold = 0.005  # 课程升级所需 Hit 率
+fixed_target_local_pos = (0.625, 0.0, 0.20)
+target_randomization_local_range = {"x": (-0.2, 0.2), "y": (-0.2, 0.2), "z": (-0.2, 0.2)}
+target_visible_time_range_s = (0.3, 0.8)
+hidden_target_obs_local = (0.0, 0.0, -10.0)
 ```
 
 ---
@@ -244,22 +242,16 @@ curriculum_hit_rate_threshold = 0.005  # 课程升级所需 Hit 率
 - `undesired_contacts()`: 非预期接触惩罚，惩罚除脚踝和手腕外的身体部位触地 (权重: -0.1)
 
 **Stage 2 任务奖励:**
-- `effector_target_hit()`: **核心奖励** - 有效击中目标时给予脉冲奖励
-- `effector_target_near()`: 首次进入引导大球 (25cm) 的一次性奖励
-- `effector_face_target()`: 躯干朝向目标的战术奖励
-- `effector_target_hit_velocity_bonus()`: 高速击中的额外奖励
-
-**Stage 2 惩罚:**
-- `pen_touch_lazy()`: 低速进入目标区域的即时惩罚
-- `pen_lingering()`: **指数形式** 停留惩罚 (停留 >0.1s 后惩罚指数增长)
-- `posture_unstable()`: 身体倾斜超过阈值的惩罚
+- `effector_target_hit()`: 命中脉冲奖励（仅首次 hit）
+- `effector_target_near()`: 距离进展奖励（仅 hit 前生效）
+- `post_hit_return_to_start_exp()`: hit 后回到起始位置奖励
 
 
 **奖励数学形式:**
 ```
 Mimic 奖励: reward = exp(-error² / std²)
 Hit 奖励: reward = 1.0 (脉冲)
-停留惩罚: penalty = exp((t - 0.1) / 0.1) - 1 (指数形式)
+回位奖励: reward = exp(-||p_xy - p_start_xy||² / std_xy²)
 动作平滑: penalty = -0.1 × ||a_t - a_{t-1}||²
 ```
 
@@ -275,12 +267,12 @@ Hit 奖励: reward = 1.0 (脉冲)
 - `last_action`: 上一步动作 (29 维)
 
 **Stage 2 任务导向观测 (28 维):**
-- `target_relative_position()`: 目标在机器人局部坐标系中的位置 (3 维)
+- `target_relative_position()`: 目标在机器人局部坐标系中的位置 (3 维，短时可见后隐藏)
 - `target_relative_velocity()`: 目标相对速度 (3 维, 当前为零)
 - `strikes_left()`: 剩余攻击次数 (1 维, 预留)
 - `time_left()`: 剩余时间 (1 维, 预留)
-- `active_effector_one_hot()`: 活跃攻击肢体 (4 维: [左手, 右手, 左脚, 右脚])
-- `skill_type_one_hot()`: 技能类型 (16 维: 拳法、腿法、组合技)
+- `active_effector_one_hot()`: 活跃攻击肢体 (4 维: [左手, 右手, 左脚, 右脚], 自动映射)
+- `skill_type_one_hot()`: 16 维全 0 (保留通道，当前不使用)
 
 **观测维度统计:**
 | 网络 | Stage 1 | Stage 2 |
@@ -310,7 +302,8 @@ Hit 奖励: reward = 1.0 (脉冲)
 - `bad_motion_body_pos()`: 四肢位置偏差过大
 
 **Stage 2 终止条件:**
-- `time_out()`: Episode 超时 (20 秒)
+- `motion_completed()`: 动作参考轨迹播放完成（单动作单回合）
+- `time_out()`: Episode 超时 (兜底)
 - `robot_falling()`: 摔倒检测 (高度<0.3m 或 倾斜>55°)
 
 ---
@@ -328,14 +321,15 @@ Hit 奖励: reward = 1.0 (脉冲)
 | `ActionsCfg` | 动作空间: 29 DOF 关节位置控制 |
 | `ObservationsCfg` | 观测配置: Policy (188维) + Critic (314维) |
 | `RewardsCfg` | 奖励配置: 任务奖励 + Mimic 奖励 + 惩罚项 |
-| `TerminationsCfg` | 终止条件: 超时 + 摔倒检测 |
+| `TerminationsCfg` | 终止条件: motion_completed + 超时兜底 + 摔倒检测 |
 | `EventCfg` | 域随机化配置 |
 
 **关键环境参数:**
 ```python
 decimation = 4          # 控制频率 = 200Hz / 4 = 50Hz
 sim.dt = 0.005          # 仿真步长 5ms
-episode_length_s = 20.0 # Episode 最大时长
+episode_length_s = 10.0 # Episode 超时兜底
+motion_completed = True # 一个动作长度对应一个 episode
 num_envs = 4096         # 并行环境数
 ```
 
