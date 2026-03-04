@@ -362,7 +362,7 @@ class RewardsCfg:
     # - 该项过大易压制任务目标，因此默认较小权重
     amp_style_reward = RewTerm(
         func=mdp.amp_style_reward,
-        weight=0.50,
+        weight=5.0,
         params={"command_name": "motion"},
     )
     # router_diversity：
