@@ -20,6 +20,13 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
+parser.add_argument("--registry_name", type=str, default=None, help="WandB motion registry name.")
+parser.add_argument(
+    "--eval_strict",
+    action="store_true",
+    default=False,
+    help="Disable observation noise and domain randomization for cleaner evaluation.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -68,6 +75,36 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
+    if args_cli.eval_strict:
+        print("[INFO] Enabling strict eval mode: disable observation noise and domain randomization.")
+        # Disable observation corruption/noise at inference.
+        if hasattr(env_cfg.observations, "policy"):
+            env_cfg.observations.policy.enable_corruption = False
+        if hasattr(env_cfg.observations, "critic"):
+            env_cfg.observations.critic.enable_corruption = False
+
+        # Disable environment randomization events.
+        for event_name in ("push_robot", "physics_material", "add_joint_default_pos", "base_com"):
+            if hasattr(env_cfg.events, event_name):
+                setattr(env_cfg.events, event_name, None)
+
+        # Disable command-space random perturbations on episode resampling.
+        zero_range = {key: (0.0, 0.0) for key in ("x", "y", "z", "roll", "pitch", "yaw")}
+        env_cfg.commands.motion.pose_range = zero_range
+        env_cfg.commands.motion.velocity_range = zero_range
+        env_cfg.commands.motion.joint_position_range = (0.0, 0.0)
+
+    def resolve_motion_file_from_artifact(artifact) -> str:
+        artifact_dir = pathlib.Path(artifact.download())
+        motion_file_path = artifact_dir / "motion.npz"
+        if not motion_file_path.is_file():
+            npz_candidates = sorted(artifact_dir.glob("*.npz"))
+            if len(npz_candidates) == 0:
+                raise FileNotFoundError(f"No .npz file found in artifact directory: {artifact_dir}")
+            motion_file_path = npz_candidates[0]
+            print(f"[WARN] motion.npz not found, fallback to: {motion_file_path.name}")
+        return str(motion_file_path)
+
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
@@ -98,20 +135,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.motion_file is not None:
             print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
             env_cfg.commands.motion.motion_file = args_cli.motion_file
-
-        art = next((a for a in wandb_run.used_artifacts() if a.type == "motions"), None)
-        if art is None:
-            print("[WARN] No model artifact found in the run.")
+        elif args_cli.registry_name is not None:
+            registry_name = args_cli.registry_name
+            if ":" not in registry_name:
+                registry_name += ":latest"
+            motion_artifact = api.artifact(registry_name)
+            env_cfg.commands.motion.motion_file = resolve_motion_file_from_artifact(motion_artifact)
+            print(f"[INFO] Using motion registry from CLI: {registry_name}")
         else:
-            artifact_dir = pathlib.Path(art.download())
-            motion_file_path = artifact_dir / "motion.npz"
-            if not motion_file_path.is_file():
-                npz_candidates = sorted(artifact_dir.glob("*.npz"))
-                if len(npz_candidates) == 0:
-                    raise FileNotFoundError(f"No .npz file found in artifact directory: {artifact_dir}")
-                motion_file_path = npz_candidates[0]
-                print(f"[WARN] motion.npz not found, fallback to: {motion_file_path.name}")
-            env_cfg.commands.motion.motion_file = str(motion_file_path)
+            motion_artifact = next((a for a in wandb_run.used_artifacts() if str(a.type).lower() == "motions"), None)
+            if motion_artifact is None:
+                # Fallback: recover registry name from run config and fetch artifact directly.
+                registry_name = wandb_run.config.get("registry_name", None)
+                if registry_name:
+                    if ":" not in registry_name:
+                        registry_name += ":latest"
+                    try:
+                        motion_artifact = api.artifact(registry_name)
+                        print(f"[INFO] Fallback to registry_name in run config: {registry_name}")
+                    except Exception as err:
+                        print(f"[WARN] Failed to load artifact from run config registry_name: {err}")
+
+            if motion_artifact is not None:
+                env_cfg.commands.motion.motion_file = resolve_motion_file_from_artifact(motion_artifact)
+            else:
+                raise RuntimeError(
+                    "Failed to infer motion file from wandb run. "
+                    "Please pass --motion_file or --registry_name explicitly."
+                )
 
     else:
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
