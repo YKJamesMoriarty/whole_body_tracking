@@ -58,23 +58,29 @@ def router_diversity_reward(
     penalty < 0   when pop_entropy <  min_population_entropy (collapse happening)
     """
     _ = command_name  # keep manager API compatibility
+    out_device = torch.device(env.device)
     weights = get_router_weights()
     if weights is None or weights.shape[0] != env.num_envs:
-        return torch.zeros(env.num_envs, device=env.device)
+        return torch.zeros(env.num_envs, device=out_device)
+
+    # Router 权重来自策略侧 telemetry，可能在与 env 不同的 GPU 上。
+    # 奖励管理器要求所有 reward term 都与 env.reward_buf 同设备，因此这里统一搬到 env.device。
+    if weights.device != out_device:
+        weights = weights.to(device=out_device)
 
     # Population-level mean skill usage.  Shape: [num_skills]
     mean_weights = torch.mean(weights, dim=0)
 
     # Normalised entropy of the population distribution.  Scalar in [0, 1].
     num_skills = float(weights.shape[-1])
-    norm = torch.log(torch.tensor(num_skills, device=weights.device, dtype=weights.dtype) + eps)
+    norm = torch.log(torch.tensor(num_skills, device=out_device, dtype=weights.dtype) + eps)
     pop_entropy = -torch.sum(mean_weights * torch.log(mean_weights + eps)) / norm
 
     # Penalty: 0 when diverse enough, negative proportional to entropy deficit.
     penalty = torch.clamp(pop_entropy - min_population_entropy, max=0.0)
 
     # Broadcast scalar penalty to every env (same pressure everywhere).
-    return penalty.expand(env.num_envs)
+    return penalty.expand(env.num_envs).to(device=out_device)
 
 
 def post_hit_return_to_start_exp(
