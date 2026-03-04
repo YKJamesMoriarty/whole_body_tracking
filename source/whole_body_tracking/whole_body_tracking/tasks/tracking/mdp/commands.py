@@ -348,6 +348,7 @@ class MotionCommand(CommandTerm):
         self.amp_discriminator: AmpDiscriminator | None = None
         self._amp_obs_history: torch.Tensor | None = None
         self._amp_warned_dim_mismatch = False
+        self._amp_warned_history_init_error = False
         self._amp_raw_slices: dict[str, tuple[int, int]] = {}
         self._amp_num_joints = int(self.robot_joint_pos.shape[-1])
         self._amp_key_body_indices = torch.zeros(0, dtype=torch.long, device=self.device)
@@ -366,6 +367,11 @@ class MotionCommand(CommandTerm):
                 self.cfg.amp_disc_bundle_path,
                 activation=self.cfg.amp_disc_activation,
             ).to(self.device)
+            # AMP diagnostics (for debugging "amp_style_reward stuck at 0").
+            self.metrics["amp_obs_valid"] = torch.zeros(self.num_envs, device=self.device)
+            self.metrics["amp_disc_logit"] = torch.zeros(self.num_envs, device=self.device)
+            self.metrics["amp_disc_prob"] = torch.zeros(self.num_envs, device=self.device)
+            self.metrics["amp_reward_raw"] = torch.zeros(self.num_envs, device=self.device)
 
         # Unified effector setup: infer skill from motion name, then map to active effector.
         self.motion_name = _normalize_motion_name(self.cfg.motion_file) if len(self.cfg.motion_file) > 0 else "stage4_moe"
@@ -853,9 +859,12 @@ class MotionCommand(CommandTerm):
             return
         try:
             features = self._compute_amp_step_features()
-        except Exception:
+        except Exception as exc:
             # Robot buffers may be unavailable during very early initialization.
             self._amp_obs_history = None
+            if not self._amp_warned_history_init_error:
+                print(f"[AMPReward] 初始化 AMP 历史观测失败，将在后续 step 重试: {exc}")
+                self._amp_warned_history_init_error = True
             return
         feat_dim = features.shape[-1]
         self._amp_obs_history = torch.zeros(
@@ -1079,10 +1088,17 @@ class MotionCommand(CommandTerm):
         if (not self.amp_reward_enabled) or (self.amp_discriminator is None):
             return torch.zeros(self.num_envs, device=self.device)
         disc_obs = self.get_amp_disc_obs()
-        return self.amp_discriminator.style_reward(
-            disc_obs,
-            disc_reward_scale=self.cfg.amp_disc_reward_scale,
-        )
+        logits = self.amp_discriminator.forward(disc_obs, normalize=True)
+        prob = torch.sigmoid(logits)
+        raw_reward = -torch.log(torch.clamp(1.0 - prob, min=1e-4)) * float(self.cfg.amp_disc_reward_scale)
+
+        if "amp_obs_valid" in self.metrics:
+            self.metrics["amp_obs_valid"][:] = 0.0 if (self._amp_obs_history is None) else 1.0
+            self.metrics["amp_disc_logit"][:] = logits
+            self.metrics["amp_disc_prob"][:] = prob
+            self.metrics["amp_reward_raw"][:] = raw_reward
+
+        return raw_reward
 
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation

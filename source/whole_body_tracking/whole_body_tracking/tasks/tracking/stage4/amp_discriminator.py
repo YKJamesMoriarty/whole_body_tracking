@@ -35,6 +35,7 @@ class AmpDiscriminator(nn.Module):
         norm_mean: torch.Tensor,
         norm_std: torch.Tensor,
         activation: str = "elu",
+        norm_clip: float = 10.0,
     ):
         super().__init__()
         self.layers = nn.ModuleList(linears)
@@ -42,6 +43,7 @@ class AmpDiscriminator(nn.Module):
         self.norm_mean = nn.Parameter(norm_mean.clone().float(), requires_grad=False)
         self.norm_std = nn.Parameter(norm_std.clone().float(), requires_grad=False)
         self.activation = _activation_from_name(activation)
+        self.norm_clip = float(max(norm_clip, 1e-6))
         self.meta = DiscBundleMeta(
             obs_dim=int(norm_mean.numel()),
             num_hidden_layers=len(linears),
@@ -100,7 +102,9 @@ class AmpDiscriminator(nn.Module):
         return model
 
     def normalize_obs(self, disc_obs: torch.Tensor) -> torch.Tensor:
-        return (disc_obs - self.norm_mean) / self.norm_std
+        norm_obs = (disc_obs - self.norm_mean) / self.norm_std
+        # MimicKit Normalizer uses clip=10 by default; keep inference behavior aligned.
+        return torch.clamp(norm_obs, min=-self.norm_clip, max=self.norm_clip)
 
     def forward(self, disc_obs: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         x = self.normalize_obs(disc_obs) if normalize else disc_obs
