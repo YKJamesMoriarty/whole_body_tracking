@@ -22,6 +22,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import whole_body_tracking.tasks.tracking.mdp as mdp
+from whole_body_tracking.tasks.tracking.stage4.skill_registry import STAGE4_SKILL_METRIC_NAMES
 
 ##
 # Scene definition
@@ -95,7 +96,10 @@ class CommandsCfg:
         target_visible_time_range_s=(0.3, 0.8),
         hidden_target_obs_local=(0.0, 0.0, -10.0),
         guidance_sphere_radius=0.4,
+        guidance_sphere_follow_hit_radius=False,
         hit_distance_threshold=0.06,
+        target_sphere_follow_hit_radius=False,
+        router_metric_names=tuple(STAGE4_SKILL_METRIC_NAMES),
         pose_range={
             "x": (-0.05, 0.05),
             "y": (-0.05, 0.05),
@@ -336,75 +340,119 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for Stage-2 two-phase training.
+    """Stage4（MoE 冻结专家 + 可训练路由）奖励项配置。"""
 
-    Phase split:
-    - pre-hit: mimic + target rewards (near/hit)
-    - post-hit: mimic + return-to-start reward
-    """
-
-    # Task rewards (auto-gated by command.task_rewards_enabled in reward functions).
-    effector_target_hit = RewTerm(func=mdp.effector_target_hit, weight=12.0, params={"command_name": "motion"})
-    effector_target_near = RewTerm(
-        func=mdp.effector_target_near,
+    # ----------------------------
+    # 任务主奖励（命中/风格/多样性）
+    # ----------------------------
+    # effector_target_hit：
+    # - 含义：每个 episode 首次有效命中给一个脉冲奖励
+    # - 原始函数输出范围：{0, 1}
+    # - 由于 RewardManager 内部会再乘以 dt，单次事件实际增益≈weight*dt
+    # - 当前 step_dt = sim.dt * decimation = 0.005 * 4 = 0.02
+    #   所以 weight=250 表示单次命中约 +250 * 0.02 = +5.0
+    effector_target_hit = RewTerm(
+        func=mdp.effector_target_hit,
+        weight=3000.0,
+        params={"command_name": "motion"},
+    )
+    # amp_style_reward：
+    # - 含义：AMP 判别器风格奖励，鼓励动作分布接近参考动作流形
+    # - 原始函数输出范围：[0, +∞)；常见训练早期在 [0, 5]，偶发更高
+    # - 该项过大易压制任务目标，因此默认较小权重
+    amp_style_reward = RewTerm(
+        func=mdp.amp_style_reward,
+        weight=0.50,
+        params={"command_name": "motion"},
+    )
+    # router_diversity：
+    # - 含义：跨 env 的群体多样性惩罚项。当某一技能在所有 env 中的平均权重
+    #         过于集中（群体熵 < min_population_entropy）时施加负奖励。
+    #         单个 env 内专家权重可以集中（某 env 专门用拳击或踢腿都 OK），
+    #         只要不同 env 整体上分散到不同技能即可。
+    # - 函数输出范围：(-min_population_entropy, 0]，全为非正值（纯惩罚项）
+    # - 参数：
+    #   min_population_entropy：群体熵阈值（归一化 0~1），低于此值开始惩罚
+    #   参考：7 个技能均匀分布对应熵=1.0，仅 2 个技能均等对应熵≈0.36
+    router_diversity = RewTerm(
+        func=mdp.router_diversity_reward,
         weight=8.0,
-        params={"command_name": "motion", "guidance_radius": 0.4, "scale": 10.0},
+        params={"command_name": "motion", "min_population_entropy": 0.60},
     )
 
-    # Post-hit retract/stance recovery reward.
+    # ----------------------------
+    # 命中后恢复奖励
+    # ----------------------------
+    # post_hit_return_to_start：
+    # - 含义：命中后鼓励机器人回到初始攻击位，避免命中后直接散架
+    # - 原始函数输出范围：[0, 1]（仅命中后激活）
     post_hit_return_to_start = RewTerm(
         func=mdp.post_hit_return_to_start_exp,
-        weight=4.0,
+        weight=3.0,
         params={"command_name": "motion", "std_xy": 0.2},
     )
 
-    # Mimic rewards (always active to keep style quality).
-    motion_global_anchor_pos = RewTerm(
-        func=mdp.motion_global_anchor_position_error_exp,
-        weight=1.5,
-        params={"command_name": "motion", "std": 0.3},
-    )
-    motion_global_anchor_ori = RewTerm(
-        func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.5,
-        params={"command_name": "motion", "std": 0.4},
-    )
-    motion_body_pos = RewTerm(
-        func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 0.3},
-    )
-    motion_body_ori = RewTerm(
-        func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 0.5},
-    )
-    motion_body_lin_vel = RewTerm(
-        func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=0.5,
-        params={"command_name": "motion", "std": 1.0},
-    )
-    motion_body_ang_vel = RewTerm(
-        func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=0.5,
-        params={"command_name": "motion", "std": 3.14},
-    )
-
-    # Regularization.
+    # ----------------------------
+    # 稳定性与正则项
+    # ----------------------------
+    # alive_bonus：
+    # - 含义：每步存活基础正奖励，鼓励“活得久”而非冒险速死
+    # - 原始函数输出范围：恒为 1
+    # - 近似每秒贡献：≈ weight
+    alive_bonus = RewTerm(func=mdp.alive_bonus, weight=10.0, params={"command_name": "motion"})
+    # posture_unstable：
+    # - 含义：躯干倾斜惩罚（带死区），限制大幅失衡但保留踢腿所需倾斜
+    # - 原始函数输出范围：[-1, 0]
+    # - 参数：
+    #   tilt_threshold：不惩罚阈值（cos 值）
+    #     当前设为 cos(20°)=0.9397，即与竖直方向夹角达到 20° 开始惩罚
+    #   full_penalty_tilt：达到满惩罚的 cos 值
+    #   penalty_exponent：惩罚曲线指数
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=2.0,
-        params={"command_name": "motion", "tilt_threshold": 0.8},
+        weight=600.0,
+        params={
+            "command_name": "motion",
+            "tilt_threshold": 0.9397,
+            "full_penalty_tilt": 0.50,
+            "penalty_exponent": 2.0,
+        },
     )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
+    # root_roll_pitch_rate：
+    # - 含义：抑制躯干 roll/pitch 角速度尖峰，减少突然摔倒
+    # - 原始函数输出范围：(-∞, 0]，实际常见约在 [~ -4, 0]
+    # - 参数：deadband（死区，低于该角速度不惩罚）
+    root_roll_pitch_rate = RewTerm(
+        func=mdp.root_roll_pitch_rate_l2,
+        weight=2.00,
+        params={"command_name": "motion", "deadband": 1.5},
+    )
+    # robot_falling_penalty：
+    # - 含义：机器人触发摔倒终止时的一次性惩罚
+    # - 特点：该事件奖励已做 dt 归一化，实际单次惩罚≈weight（与 dt 无关）
+    robot_falling_penalty = RewTerm(
+        func=mdp.robot_falling_penalty_event,
+        weight=-5.0,
+        params={"termination_term_name": "robot_falling"},
+    )
+    # action_rate_l2：
+    # - 含义：动作变化率惩罚，抑制高频抖动
+    # - 原始函数输出范围：(-∞, 0]
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.08)
+    # joint_limit：
+    # - 含义：关节越界惩罚，避免不合理关节姿态
+    # - 原始函数输出范围：(-∞, 0]
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-10.0,
+        weight=-6.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
+    # undesired_contacts：
+    # - 含义：非攻击末端（手脚末端外）碰撞惩罚，降低“扑地命中”
+    # - 原始函数输出范围：(-∞, 0]
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-0.1,
+        weight=-0.15,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",

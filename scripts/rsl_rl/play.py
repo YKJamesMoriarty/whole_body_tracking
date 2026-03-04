@@ -45,8 +45,7 @@ import gymnasium as gym
 import os
 import pathlib
 import torch
-
-from rsl_rl.runners import OnPolicyRunner
+import yaml
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -63,6 +62,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
+from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -163,8 +163,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
+    # Prefer run-specific agent config (supports custom Stage4 policy classes).
+    runner_cfg_dict = agent_cfg.to_dict()
+    agent_cfg_yaml = os.path.join(os.path.dirname(resume_path), "params", "agent.yaml")
+    if os.path.exists(agent_cfg_yaml):
+        with open(agent_cfg_yaml, "r") as f:
+            loaded_cfg = yaml.safe_load(f)
+        if isinstance(loaded_cfg, dict):
+            runner_cfg_dict = loaded_cfg
+            print(f"[INFO]: Loaded runner config from: {agent_cfg_yaml}")
+
     # load previously trained model
-    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    ppo_runner = OnPolicyRunner(env, runner_cfg_dict, log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference
@@ -173,15 +183,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     # 已经修复
-    export_motion_policy_as_onnx(
-        env.unwrapped,
-        ppo_runner.alg.policy,
-        #normalizer=ppo_runner.obs_normalizer,
-        normalizer=getattr(ppo_runner, "obs_normalizer", None),
-        path=export_model_dir,
-        filename="policy.onnx",
-    )
-    attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+    try:
+        export_motion_policy_as_onnx(
+            env.unwrapped,
+            ppo_runner.alg.policy,
+            normalizer=getattr(ppo_runner, "obs_normalizer", None),
+            path=export_model_dir,
+            filename="policy.onnx",
+        )
+        attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+    except Exception as exc:
+        print(f"[WARN] ONNX export skipped during play: {exc}")
     # reset environment
     obs = env.get_observations() #已经修复
     timestep = 0
