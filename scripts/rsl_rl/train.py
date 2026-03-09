@@ -46,7 +46,19 @@ parser.add_argument(
     default="256,128",
     help="Router MLP hidden dims, comma-separated (e.g., 256,128).",
 )
-parser.add_argument("--router_init_noise_std", type=float, default=0.35, help="Initial action noise std for router policy.")
+parser.add_argument("--router_init_noise_std", type=float, default=0.10, help="Initial action noise std for router policy.")
+parser.add_argument(
+    "--use_grouped_router",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Use two-level grouped router (default: enabled). Use --no-use_grouped_router for flat 7-skill router.",
+)
+parser.add_argument(
+    "--grouped_router_stance_init_bias",
+    type=float,
+    default=2.0,
+    help="Initial logit bias of stance group in grouped router.",
+)
 parser.add_argument("--hit_radius_start", type=float, default=0.30, help="Stage4 hit radius curriculum start.")
 parser.add_argument("--hit_radius_end", type=float, default=0.06, help="Stage4 hit radius curriculum end.")
 parser.add_argument("--hit_curriculum_window", type=int, default=2000, help="Episode window size for hit curriculum.")
@@ -60,6 +72,12 @@ parser.add_argument("--hit_radius_shrink_factor", type=float, default=0.98, help
 parser.add_argument("--target_visible_time_min", type=float, default=0.3, help="Target visible min seconds.")
 parser.add_argument("--target_visible_time_max", type=float, default=0.8, help="Target visible max seconds.")
 parser.add_argument("--stage4_episode_length_s", type=float, default=8.0, help="Episode length for Stage4.")
+parser.add_argument(
+    "--stage4_enable_push_event",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help="Enable push disturbance event in Stage4 training (default: disabled for early stability).",
+)
 parser.add_argument(
     "--stage4_alive_bonus_weight",
     type=float,
@@ -310,6 +328,8 @@ def _apply_stage4_overrides(env_cfg, args):
     # Episode design: no motion-length termination, fixed short episode.
     env_cfg.episode_length_s = float(args.stage4_episode_length_s)
     env_cfg.terminations.motion_completed = None
+    if hasattr(env_cfg, "events") and hasattr(env_cfg.events, "push_robot") and (not args.stage4_enable_push_event):
+        env_cfg.events.push_robot = None
 
     # Keep short target visibility from stage2 behavior.
     t_min = float(min(args.target_visible_time_min, args.target_visible_time_max))
@@ -441,10 +461,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         policy_cfg["frozen_skill_ckpts"] = frozen_ckpts
         policy_cfg["router_hidden_dims"] = _parse_dims(args_cli.router_hidden_dims)
         policy_cfg["init_noise_std"] = float(args_cli.router_init_noise_std)
+        policy_cfg["use_grouped_router"] = bool(args_cli.use_grouped_router)
+        policy_cfg["grouped_router_stance_init_bias"] = float(args_cli.grouped_router_stance_init_bias)
         runner_cfg_dict["policy"] = policy_cfg
         print("[INFO] Stage4 MoE enabled.")
         print(f"[INFO] Stage4 frozen expert motions: {args_cli.frozen_motion_dir}")
         print(f"[INFO] Frozen experts: {len(frozen_ckpts)}")
+        print(f"[INFO] Grouped router enabled: {args_cli.use_grouped_router}")
         print(f"[INFO] AMP reward enabled: {args_cli.enable_amp_reward}")
         print(f"[INFO] Router diversity reward enabled: {args_cli.enable_router_diversity_reward}")
 

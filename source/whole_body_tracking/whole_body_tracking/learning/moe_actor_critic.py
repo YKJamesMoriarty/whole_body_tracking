@@ -71,6 +71,8 @@ class MoEActorCritic(nn.Module):
         noise_std_type: str = "scalar",
         state_dependent_std: bool | None = None,
         skill_weight_temperature: float = 1.0,
+        use_grouped_router: bool = True,
+        grouped_router_stance_init_bias: float = 2.0,
         **kwargs: dict[str, Any],
     ) -> None:
         # Keep compatibility with default RSL-RL policy kwargs.
@@ -90,6 +92,7 @@ class MoEActorCritic(nn.Module):
         self.obs_groups = obs_groups
         self.noise_std_type = noise_std_type
         self.skill_weight_temperature = float(max(1e-6, skill_weight_temperature))
+        self.use_grouped_router = bool(use_grouped_router)
 
         # Infer observation dimensions.
         num_actor_obs = 0
@@ -111,12 +114,28 @@ class MoEActorCritic(nn.Module):
         self._load_and_freeze_skill_actors(frozen_skill_ckpts)
         self.num_skills = len(self.skill_actors)
 
-        # Trainable router: obs -> logits over skills.
-        self.router = MLP(num_actor_obs, self.num_skills, router_hidden_dims, activation)
+        # Trainable router:
+        # - Grouped two-level router (default): choose limb-group, then choose skill in group.
+        # - Flat router (fallback): directly output logits over skills.
+        self.group_names: list[str] = []
+        self.group_to_skill_indices: dict[str, list[int]] = {}
+        self.group_router: MLP | None = None
+        self.intra_routers = nn.ModuleDict()
+        self.router: MLP | None = None
+        self._grouped_router_stance_init_bias = float(grouped_router_stance_init_bias)
+        if self.use_grouped_router:
+            self._build_grouped_router(num_actor_obs, router_hidden_dims, activation)
+        else:
+            self.router = MLP(num_actor_obs, self.num_skills, router_hidden_dims, activation)
 
         # Trainable critic.
         self.critic = MLP(num_critic_obs, 1, critic_hidden_dims, activation)
-        print(f"MoE router MLP: {self.router}")
+        if self.use_grouped_router:
+            print(f"MoE group router MLP: {self.group_router}")
+            for group_name, intra_router in self.intra_routers.items():
+                print(f"MoE intra router [{group_name}]: {intra_router}")
+        else:
+            print(f"MoE router MLP: {self.router}")
         print(f"MoE critic MLP: {self.critic}")
         print(f"Frozen skills loaded: {self.num_skills}")
 
@@ -156,6 +175,55 @@ class MoEActorCritic(nn.Module):
             for p in skill_actor.parameters():
                 p.requires_grad_(False)
             skill_actor.eval()
+
+    @staticmethod
+    def _find_last_linear(module: nn.Module) -> nn.Linear | None:
+        for layer in reversed(list(module.modules())):
+            if isinstance(layer, nn.Linear):
+                return layer
+        return None
+
+    def _build_grouped_router(self, num_actor_obs: int, router_hidden_dims, activation: str) -> None:
+        """Build two-level grouped router.
+
+        Groups are fixed to the Stage4 skill order:
+            0 cross, 1 swing, 2 hook_left, 3 frontkick,
+            4 roundhouse_right, 5 roundhouse_left, 6 stance
+        """
+        if self.num_skills != 7:
+            raise ValueError(
+                "Grouped router expects exactly 7 skills in Stage4 order "
+                f"(got {self.num_skills})."
+            )
+
+        self.group_names = ["right_hand", "left_hand", "right_foot", "left_foot", "stance"]
+        self.group_to_skill_indices = {
+            "right_hand": [0, 1],   # cross, swing
+            "left_hand": [2],       # hook_left
+            "right_foot": [3, 4],   # frontkick, roundhouse_right
+            "left_foot": [5],       # roundhouse_left
+            "stance": [6],          # stance
+        }
+
+        self.group_router = MLP(num_actor_obs, len(self.group_names), router_hidden_dims, activation)
+        self.intra_routers = nn.ModuleDict()
+        for group_name, skill_indices in self.group_to_skill_indices.items():
+            if len(skill_indices) > 1:
+                self.intra_routers[group_name] = MLP(
+                    num_actor_obs,
+                    len(skill_indices),
+                    router_hidden_dims,
+                    activation,
+                )
+
+        # Bias grouped-router initialization toward stance so early training
+        # starts from more stable behavior.
+        last_linear = self._find_last_linear(self.group_router)
+        if last_linear is not None and last_linear.bias is not None:
+            with torch.no_grad():
+                last_linear.bias.zero_()
+                stance_group_idx = self.group_names.index("stance")
+                last_linear.bias[stance_group_idx] = self._grouped_router_stance_init_bias
 
     def reset(self, dones: torch.Tensor | None = None) -> None:
         pass
@@ -217,9 +285,37 @@ class MoEActorCritic(nn.Module):
             return torch.stack(per_skill, dim=1)
 
     def _compute_router_weights(self, actor_obs: torch.Tensor) -> torch.Tensor:
-        logits = self.router(actor_obs)
-        logits = logits / self.skill_weight_temperature
-        weights = torch.softmax(logits, dim=-1)
+        if self.use_grouped_router:
+            if self.group_router is None:
+                raise RuntimeError("Grouped router is enabled but group_router is None.")
+            group_logits = self.group_router(actor_obs) / self.skill_weight_temperature
+            group_weights = torch.softmax(group_logits, dim=-1)  # [batch, num_groups]
+
+            weights = torch.zeros(
+                actor_obs.shape[0],
+                self.num_skills,
+                dtype=actor_obs.dtype,
+                device=actor_obs.device,
+            )
+
+            for group_idx, group_name in enumerate(self.group_names):
+                skill_indices = self.group_to_skill_indices[group_name]
+                group_w = group_weights[:, group_idx : group_idx + 1]  # [batch, 1]
+                if len(skill_indices) == 1:
+                    weights[:, skill_indices[0]] = group_w.squeeze(-1)
+                    continue
+
+                intra_router = self.intra_routers[group_name]
+                intra_logits = intra_router(actor_obs) / self.skill_weight_temperature
+                intra_weights = torch.softmax(intra_logits, dim=-1)  # [batch, n_skill_in_group]
+                weights[:, skill_indices] = group_w * intra_weights
+        else:
+            if self.router is None:
+                raise RuntimeError("Flat router is enabled but router is None.")
+            logits = self.router(actor_obs)
+            logits = logits / self.skill_weight_temperature
+            weights = torch.softmax(logits, dim=-1)
+
         self._last_skill_weights = weights
         set_router_weights(weights)
         return weights

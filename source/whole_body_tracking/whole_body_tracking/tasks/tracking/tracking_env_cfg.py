@@ -399,7 +399,7 @@ class RewardsCfg:
     # - 含义：每步存活基础正奖励，鼓励“活得久”而非冒险速死
     # - 原始函数输出范围：恒为 1
     # - 近似每秒贡献：≈ weight
-    alive_bonus = RewTerm(func=mdp.alive_bonus, weight=10.0, params={"command_name": "motion"})
+    alive_bonus = RewTerm(func=mdp.alive_bonus, weight=50.0, params={"command_name": "motion"})
     # posture_unstable：
     # - 含义：躯干倾斜惩罚（带死区），限制大幅失衡但保留踢腿所需倾斜
     # - 原始函数输出范围：[-1, 0]
@@ -410,7 +410,7 @@ class RewardsCfg:
     #   penalty_exponent：惩罚曲线指数
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=600.0,
+        weight=100.0,
         params={
             "command_name": "motion",
             "tilt_threshold": 0.9397,

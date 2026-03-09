@@ -214,12 +214,9 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
     - 右手出拳: [0, 1, 0, 0]
     - 左脚踢击: [0, 0, 1, 0]
     
-    Stage 1: 硬编码为 "右手" = [0, 1, 0, 0]
-    
-    Stage 2 TODO:
-    - 根据当前技能/动作类型动态设置
-    - 从动作文件名或技能命令中解析
-    - 例如: "hook_left" -> 左手, "roundhouse_right" -> 右脚
+    当前实现:
+    - 为兼容专家模型预训练，统一返回固定 one-hot = [0, 0, 0, 1]。
+    - 即所有技能都使用相同常量输入，不承载“当前肢体”语义。
     
     Returns:
         Tensor (num_envs, 4): One-Hot 编码的活跃肢体
@@ -239,14 +236,13 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     - 避免后续修改网络架构
     - 支持拳法、腿法、组合技等多种类型
     
-    Stage 1: 硬编码为 "直拳Jab" (索引0)
-    
-    Stage 2 TODO:
-    - 根据当前技能命令或动作类型动态设置
-    - 从动作文件名解析 (例如: "cross_right_normal" -> Cross)
+    当前实现:
+    - 为兼容专家模型预训练，统一返回固定 one-hot，
+      其中第 7 维为 1（其余为 0）。
     
     Returns:
         Tensor (num_envs, 16): One-Hot 编码的技能类型
     """
-    # Keep this channel but zero it out to avoid meaningless fixed features.
-    return torch.zeros(env.num_envs, 16, device=env.device)
+    one_hot = torch.zeros(env.num_envs, 16, device=env.device)
+    one_hot[:, 7] = 1.0
+    return one_hot

@@ -43,6 +43,18 @@ parser.add_argument(
     default="256,128",
     help="Router MLP hidden dims used to construct MoE policy when agent.yaml is unavailable.",
 )
+parser.add_argument(
+    "--use_grouped_router",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Use two-level grouped router for Stage4 MoE play (default: enabled).",
+)
+parser.add_argument(
+    "--grouped_router_stance_init_bias",
+    type=float,
+    default=2.0,
+    help="Initial stance-group bias when reconstructing grouped router without agent.yaml.",
+)
 parser.add_argument("--target_visible_time_min", type=float, default=0.3, help="Target visible min seconds for Stage4.")
 parser.add_argument("--target_visible_time_max", type=float, default=0.8, help="Target visible max seconds for Stage4.")
 parser.add_argument("--stage4_episode_length_s", type=float, default=8.0, help="Episode length for Stage4 play.")
@@ -113,6 +125,8 @@ def _apply_stage4_play_overrides(env_cfg, args):
     env_cfg.episode_length_s = float(args.stage4_episode_length_s)
     if hasattr(env_cfg.terminations, "motion_completed"):
         env_cfg.terminations.motion_completed = None
+    if hasattr(env_cfg, "events") and hasattr(env_cfg.events, "push_robot"):
+        env_cfg.events.push_robot = None
 
     t_min = float(min(args.target_visible_time_min, args.target_visible_time_max))
     t_max = float(max(args.target_visible_time_min, args.target_visible_time_max))
@@ -242,23 +256,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Prefer run-specific agent config (supports custom Stage4 policy classes).
     runner_cfg_dict = agent_cfg.to_dict()
+    loaded_runner_cfg_from_file = False
     agent_cfg_yaml = os.path.join(os.path.dirname(resume_path), "params", "agent.yaml")
     if os.path.exists(agent_cfg_yaml):
         with open(agent_cfg_yaml, "r") as f:
             loaded_cfg = yaml.safe_load(f)
         if isinstance(loaded_cfg, dict):
             runner_cfg_dict = loaded_cfg
+            loaded_runner_cfg_from_file = True
             print(f"[INFO]: Loaded runner config from: {agent_cfg_yaml}")
 
     # For wandb-only checkpoint play, params/agent.yaml may be unavailable.
-    # Reconstruct Stage4 policy config from CLI so MoE checkpoint can still be loaded.
+    # In that case reconstruct Stage4 policy config from CLI so MoE checkpoint can still be loaded.
     if args_cli.stage4_moe:
         policy_cfg = dict(runner_cfg_dict.get("policy", {}))
-        policy_cfg["class_name"] = "whole_body_tracking.learning.moe_actor_critic.MoEActorCritic"
-        policy_cfg["frozen_skill_ckpts"] = resolve_stage4_model_paths(args_cli.frozen_model_dir)
-        policy_cfg["router_hidden_dims"] = _parse_dims(args_cli.router_hidden_dims)
+        if not loaded_runner_cfg_from_file:
+            policy_cfg["class_name"] = "whole_body_tracking.learning.moe_actor_critic.MoEActorCritic"
+            policy_cfg["frozen_skill_ckpts"] = resolve_stage4_model_paths(args_cli.frozen_model_dir)
+            policy_cfg["router_hidden_dims"] = _parse_dims(args_cli.router_hidden_dims)
+            policy_cfg["use_grouped_router"] = bool(args_cli.use_grouped_router)
+            policy_cfg["grouped_router_stance_init_bias"] = float(args_cli.grouped_router_stance_init_bias)
+            print("[INFO]: Stage4 MoE policy config reconstructed from CLI.")
+        else:
+            # Keep run config as source-of-truth to avoid checkpoint mismatch.
+            # Only fill optional missing keys for backward compatibility.
+            policy_cfg.setdefault("class_name", "whole_body_tracking.learning.moe_actor_critic.MoEActorCritic")
+            policy_cfg.setdefault("frozen_skill_ckpts", resolve_stage4_model_paths(args_cli.frozen_model_dir))
+            policy_cfg.setdefault("use_grouped_router", bool(args_cli.use_grouped_router))
+            policy_cfg.setdefault("grouped_router_stance_init_bias", float(args_cli.grouped_router_stance_init_bias))
+            print("[INFO]: Stage4 MoE policy config loaded from run's agent.yaml.")
         runner_cfg_dict["policy"] = policy_cfg
-        print("[INFO]: Stage4 MoE policy config applied for play.")
+        print("[INFO]: Stage4 MoE policy config applied.")
         print(f"[INFO]: Stage4 frozen expert models dir: {args_cli.frozen_model_dir}")
 
     # load previously trained model

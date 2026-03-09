@@ -383,14 +383,10 @@ class MotionCommand(CommandTerm):
             self.cfg.right_foot_skill_names,
         )
 
-        one_hot_map = {
-            "left_hand": [1.0, 0.0, 0.0, 0.0],
-            "right_hand": [0.0, 1.0, 0.0, 0.0],
-            "left_foot": [0.0, 0.0, 1.0, 0.0],
-            "right_foot": [0.0, 0.0, 0.0, 1.0],
-        }
+        # Keep compatibility with single-skill expert pretraining:
+        # use a fixed active-effector one-hot for all modes/skills.
         self.active_effector_one_hot = torch.tensor(
-            one_hot_map[self.effector_group], dtype=torch.float32, device=self.device
+            [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
         ).repeat(self.num_envs, 1)
 
         # Hit can only be triggered by hands/feet end effectors.
@@ -462,6 +458,10 @@ class MotionCommand(CommandTerm):
             return
         if weights.ndim != 2 or weights.shape[0] != self.num_envs:
             return
+        # Telemetry comes from policy side and may live on another CUDA device.
+        # Align to env device to avoid cross-device ops in metrics accumulation.
+        if weights.device != self.device:
+            weights = weights.to(device=self.device)
 
         if self._router_weight_episode_sum is None or self._router_weight_episode_sum.shape[1] != weights.shape[1]:
             configured_names = list(self.cfg.router_metric_names)
