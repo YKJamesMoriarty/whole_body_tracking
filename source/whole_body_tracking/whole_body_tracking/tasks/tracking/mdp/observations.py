@@ -228,6 +228,7 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
     # 格式: [左手, 右手, 左脚, 右脚]
     one_hot = torch.zeros(env.num_envs, 4, device=env.device)
     one_hot[:, 0] = 1.0  # 左手0，右手1，左脚2，右脚3
+    # 暂时不需要使用了，就直接不论什么技能都设置为[0,0,0,1]=1.0 即可，CoRL那篇反正不需要用这个参数了
     
     # Stage 2 TODO: 根据以下信息动态确定活跃肢体:
     #   - 动作文件名 (例如: "cross" -> 右手, "hook_left" -> 左手)
