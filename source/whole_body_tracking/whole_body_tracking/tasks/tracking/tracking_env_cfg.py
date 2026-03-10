@@ -353,7 +353,7 @@ class RewardsCfg:
     #   所以 weight=250 表示单次命中约 +250 * 0.02 = +5.0
     effector_target_hit = RewTerm(
         func=mdp.effector_target_hit,
-        weight=3000.0,
+        weight=0000.0,
         params={"command_name": "motion"},
     )
     # amp_style_reward：
@@ -362,7 +362,7 @@ class RewardsCfg:
     # - 该项过大易压制任务目标，因此默认较小权重
     amp_style_reward = RewTerm(
         func=mdp.amp_style_reward,
-        weight=5.0,
+        weight=0.0,
         params={"command_name": "motion"},
     )
     # router_diversity：
@@ -376,7 +376,7 @@ class RewardsCfg:
     #   参考：7 个技能均匀分布对应熵=1.0，仅 2 个技能均等对应熵≈0.36
     router_diversity = RewTerm(
         func=mdp.router_diversity_reward,
-        weight=8.0,
+        weight=0.0,
         params={"command_name": "motion", "min_population_entropy": 0.60},
     )
 
@@ -388,7 +388,7 @@ class RewardsCfg:
     # - 原始函数输出范围：[0, 1]（仅命中后激活）
     post_hit_return_to_start = RewTerm(
         func=mdp.post_hit_return_to_start_exp,
-        weight=3.0,
+        weight=0.0,
         params={"command_name": "motion", "std_xy": 0.2},
     )
 
@@ -410,7 +410,7 @@ class RewardsCfg:
     #   penalty_exponent：惩罚曲线指数
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=100.0,
+        weight=000.0,
         params={
             "command_name": "motion",
             "tilt_threshold": 0.9397,
@@ -424,7 +424,7 @@ class RewardsCfg:
     # - 参数：deadband（死区，低于该角速度不惩罚）
     root_roll_pitch_rate = RewTerm(
         func=mdp.root_roll_pitch_rate_l2,
-        weight=2.00,
+        weight=0.00,
         params={"command_name": "motion", "deadband": 1.5},
     )
     # robot_falling_penalty：
@@ -438,13 +438,13 @@ class RewardsCfg:
     # action_rate_l2：
     # - 含义：动作变化率惩罚，抑制高频抖动
     # - 原始函数输出范围：(-∞, 0]
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.08)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     # joint_limit：
     # - 含义：关节越界惩罚，避免不合理关节姿态
     # - 原始函数输出范围：(-∞, 0]
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-6.0,
+        weight=-10.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
     # undesired_contacts：
@@ -452,7 +452,7 @@ class RewardsCfg:
     # - 原始函数输出范围：(-∞, 0]
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-0.15,
+        weight=-0.10,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
