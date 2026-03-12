@@ -59,6 +59,12 @@ parser.add_argument(
     default=5.0,
     help="Initial logit bias of stance group in grouped router.",
 )
+parser.add_argument(
+    "--grouped_router_cross_init_bias",
+    type=float,
+    default=0.0,
+    help="Initial logit bias for right_hand group and cross intra-router (debug: favor cross skill).",
+)
 parser.add_argument("--hit_radius_start", type=float, default=0.30, help="Stage4 hit radius curriculum start.")
 parser.add_argument("--hit_radius_end", type=float, default=0.06, help="Stage4 hit radius curriculum end.")
 parser.add_argument("--hit_curriculum_window", type=int, default=2000, help="Episode window size for hit curriculum.")
@@ -463,6 +469,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         policy_cfg["init_noise_std"] = float(args_cli.router_init_noise_std)
         policy_cfg["use_grouped_router"] = bool(args_cli.use_grouped_router)
         policy_cfg["grouped_router_stance_init_bias"] = float(args_cli.grouped_router_stance_init_bias)
+        policy_cfg["grouped_router_cross_init_bias"] = float(args_cli.grouped_router_cross_init_bias)
         runner_cfg_dict["policy"] = policy_cfg
         print("[INFO] Stage4 MoE enabled.")
         print(f"[INFO] Stage4 frozen expert motions: {args_cli.frozen_motion_dir}")

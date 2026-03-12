@@ -73,6 +73,8 @@ class MoEActorCritic(nn.Module):
         skill_weight_temperature: float = 1.0,
         use_grouped_router: bool = True,
         grouped_router_stance_init_bias: float = 2.0,
+        grouped_router_cross_init_bias: float = 0.0,
+        force_skill_index: int | None = None,
         **kwargs: dict[str, Any],
     ) -> None:
         # Keep compatibility with default RSL-RL policy kwargs.
@@ -93,6 +95,8 @@ class MoEActorCritic(nn.Module):
         self.noise_std_type = noise_std_type
         self.skill_weight_temperature = float(max(1e-6, skill_weight_temperature))
         self.use_grouped_router = bool(use_grouped_router)
+        self._grouped_router_cross_init_bias = float(grouped_router_cross_init_bias)
+        self._force_skill_index = int(force_skill_index) if (force_skill_index is not None) else None
 
         # Infer observation dimensions.
         num_actor_obs = 0
@@ -216,14 +220,26 @@ class MoEActorCritic(nn.Module):
                     activation,
                 )
 
-        # Bias grouped-router initialization toward stance so early training
-        # starts from more stable behavior.
+        # Bias grouped-router initialization:
+        # - stance bias encourages early stability
+        # - cross bias lifts the right_hand group at init for debugging
         last_linear = self._find_last_linear(self.group_router)
         if last_linear is not None and last_linear.bias is not None:
             with torch.no_grad():
                 last_linear.bias.zero_()
                 stance_group_idx = self.group_names.index("stance")
+                right_hand_group_idx = self.group_names.index("right_hand")
                 last_linear.bias[stance_group_idx] = self._grouped_router_stance_init_bias
+                last_linear.bias[right_hand_group_idx] = self._grouped_router_cross_init_bias
+
+        # Bias intra-router for right_hand toward cross (index 0 within the group).
+        if "right_hand" in self.intra_routers:
+            intra_router = self.intra_routers["right_hand"]
+            intra_last = self._find_last_linear(intra_router)
+            if intra_last is not None and intra_last.bias is not None:
+                with torch.no_grad():
+                    intra_last.bias.zero_()
+                    intra_last.bias[0] = self._grouped_router_cross_init_bias
 
     def reset(self, dones: torch.Tensor | None = None) -> None:
         pass
@@ -285,6 +301,20 @@ class MoEActorCritic(nn.Module):
             return torch.stack(per_skill, dim=1)
 
     def _compute_router_weights(self, actor_obs: torch.Tensor) -> torch.Tensor:
+        if self._force_skill_index is not None:
+            idx = int(self._force_skill_index)
+            if (idx < 0) or (idx >= self.num_skills):
+                raise ValueError(f"force_skill_index out of range: {idx} (num_skills={self.num_skills})")
+            weights = torch.zeros(
+                actor_obs.shape[0],
+                self.num_skills,
+                dtype=actor_obs.dtype,
+                device=actor_obs.device,
+            )
+            weights[:, idx] = 1.0
+            self._last_skill_weights = weights
+            set_router_weights(weights)
+            return weights
         if self.use_grouped_router:
             if self.group_router is None:
                 raise RuntimeError("Grouped router is enabled but group_router is None.")

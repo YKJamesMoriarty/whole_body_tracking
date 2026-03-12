@@ -55,6 +55,12 @@ parser.add_argument(
     default=5.0,
     help="Initial stance-group bias when reconstructing grouped router without agent.yaml.",
 )
+parser.add_argument(
+    "--grouped_router_cross_init_bias",
+    type=float,
+    default=0.0,
+    help="Initial cross bias when reconstructing grouped router without agent.yaml.",
+)
 parser.add_argument("--target_visible_time_min", type=float, default=0.3, help="Target visible min seconds for Stage4.")
 parser.add_argument("--target_visible_time_max", type=float, default=0.8, help="Target visible max seconds for Stage4.")
 parser.add_argument("--stage4_episode_length_s", type=float, default=8.0, help="Episode length for Stage4 play.")
@@ -276,6 +282,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             policy_cfg["router_hidden_dims"] = _parse_dims(args_cli.router_hidden_dims)
             policy_cfg["use_grouped_router"] = bool(args_cli.use_grouped_router)
             policy_cfg["grouped_router_stance_init_bias"] = float(args_cli.grouped_router_stance_init_bias)
+            policy_cfg["grouped_router_cross_init_bias"] = float(args_cli.grouped_router_cross_init_bias)
             print("[INFO]: Stage4 MoE policy config reconstructed from CLI.")
         else:
             # Keep run config as source-of-truth to avoid checkpoint mismatch.
@@ -284,6 +291,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             policy_cfg.setdefault("frozen_skill_ckpts", resolve_stage4_model_paths(args_cli.frozen_model_dir))
             policy_cfg.setdefault("use_grouped_router", bool(args_cli.use_grouped_router))
             policy_cfg.setdefault("grouped_router_stance_init_bias", float(args_cli.grouped_router_stance_init_bias))
+            policy_cfg.setdefault("grouped_router_cross_init_bias", float(args_cli.grouped_router_cross_init_bias))
             print("[INFO]: Stage4 MoE policy config loaded from run's agent.yaml.")
         runner_cfg_dict["policy"] = policy_cfg
         print("[INFO]: Stage4 MoE policy config applied.")
