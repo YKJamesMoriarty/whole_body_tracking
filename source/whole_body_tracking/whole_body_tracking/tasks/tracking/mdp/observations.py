@@ -211,23 +211,23 @@ def active_effector_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Te
     """
     (5) 活跃攻击肢体 (4 维) - One-Hot 编码
 
-    格式: [左手=0, 右手=1, 左脚=2, 右脚=3]
+    新7技能统一训练方式：所有技能（含 stance）训练时该观测固定为 [1, 0, 0, 0]（index=0），
+    因此推理时直接硬编码返回，不再依赖 command.current_effector_one_hot_idx。
 
-    索引由 MotionCommandCfg.effector_one_hot_idx 配置（训练时静态）。
-    打标时 switch_skill() 动态修改 command.current_effector_one_hot_idx。
+    注意：effector_body_name 依然在 switch_skill() 中正确维护，用于命中检测。
 
-    特殊值:
-        -1 = 无进攻肢体 (stance / 防守站姿)，返回全零向量 [0, 0, 0, 0]
-        注意: 不能直接用 tensor[:, -1]，Python 负索引会错误地写入最后一维 (右脚=3)
+    # 旧逻辑（5技能，各技能effector不同时保留）:
+    # command: MotionCommand = env.command_manager.get_term(command_name)
+    # one_hot = torch.zeros(env.num_envs, 4, device=env.device)
+    # if command.current_effector_one_hot_idx >= 0:
+    #     one_hot[:, command.current_effector_one_hot_idx] = 1.0
+    # return one_hot
 
     Returns:
-        Tensor (num_envs, 4): One-Hot 编码的活跃肢体
+        Tensor (num_envs, 4): 固定值 [1, 0, 0, 0]（新7技能统一，index=0）
     """
-    command: MotionCommand = env.command_manager.get_term(command_name)
     one_hot = torch.zeros(env.num_envs, 4, device=env.device)
-    if command.current_effector_one_hot_idx >= 0:
-        one_hot[:, command.current_effector_one_hot_idx] = 1.0
-    # current_effector_one_hot_idx == -1 → 保持全零 (stance/无进攻肢体)
+    one_hot[:, 0] = 1.0  # 新7技能（含stance）训练时全部统一为 index=0，即 [1,0,0,0]
     return one_hot
 
 
@@ -235,21 +235,19 @@ def skill_type_one_hot(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     """
     (6) 技能类型 (16 维) - One-Hot 编码
 
-    技能索引对照表:
-        0: r-Cross (右直拳)          1: r-swing (右摆拳)
-        2: roundhouse_right_low      3: roundhouse_right_fast_high (右高位鞭腿)
-        4: frontkick_right_body      5: stance (防守站姿)
-        6: roundhouse_right_mid      7: hook_left_body
-        8: roundhouse_left_mid       9~15: 预留
+    新7技能统一训练方式：所有技能（含 stance）训练时该观测固定为 index=7，
+    因此推理时直接硬编码返回，不再依赖 command.current_skill_type_idx。
+    技能的选择与切换由外部脚本（switch_skill）负责，策略内部不感知技能类型。
 
-    索引由 MotionCommandCfg.skill_type_idx 配置（训练时静态）。
-    打标时 switch_skill() 动态修改 command.current_skill_type_idx。
+    # 旧逻辑（5技能，各技能index不同时保留）:
+    # command: MotionCommand = env.command_manager.get_term(command_name)
+    # one_hot = torch.zeros(env.num_envs, 16, device=env.device)
+    # one_hot[:, command.current_skill_type_idx] = 1.0
+    # return one_hot
 
     Returns:
-        Tensor (num_envs, 16): One-Hot 编码的技能类型
+        Tensor (num_envs, 16): 固定值 [:, 7] = 1.0（新7技能统一）
     """
-    command: MotionCommand = env.command_manager.get_term(command_name)
     one_hot = torch.zeros(env.num_envs, 16, device=env.device)
-    one_hot[:, command.current_skill_type_idx] = 1.0
-
+    one_hot[:, 7] = 1.0  # 新7技能（含stance）训练时全部统一为 index=7
     return one_hot

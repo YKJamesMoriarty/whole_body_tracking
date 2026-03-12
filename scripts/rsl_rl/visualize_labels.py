@@ -21,15 +21,16 @@ import numpy as np
 
 
 # ====================================================================
-# 技能颜色表 (与 SKILL_CONFIGS 的 skill_id 对应)
+# 技能颜色表 (与 SKILL_CONFIGS 的 skill_id 对应，新7技能)
 # ====================================================================
 SKILL_COLORS = {
-    0: ("#4878CF", "cross (右直拳)"),
-    1: ("#6ACC65", "swing (右摆拳)"),
-    3: ("#D65F5F", "roundhouse (右高位鞭腿)"),
-    4: ("#B47CC7", "frontkick (右脚正蹬)"),
-    5: ("#C4AD66", "stance (防守/无目标)"),
-    # 未来新技能可继续添加
+    0: ("#4878CF", "cross_right (右手直拳)"),
+    1: ("#6ACC65", "swing_right (右手摆拳)"),
+    2: ("#F4A835", "hook_left (左手勾拳)"),
+    3: ("#D65F5F", "roundhouse_right (右脚中位鞭腿)"),
+    4: ("#E07ACC", "roundhouse_left (左脚中位鞭腿)"),
+    5: ("#B47CC7", "frontkick_right (右脚正蹬)"),
+    6: ("#C4AD66", "stance (防守/无目标)"),
 }
 DEFAULT_COLOR = ("#888888", "unknown")
 
@@ -73,8 +74,8 @@ def plot_3d_labels(
     for skill_id in unique_ids:
         mask = (final_labels == skill_id)
 
-        # 过滤低命中率点（stance 标签不过滤）
-        if min_accuracy > 0.0 and skill_id != 5:
+        # 过滤低命中率点（stance 标签不过滤，stance_id=6）
+        if min_accuracy > 0.0 and skill_id != 6:
             max_acc = all_accuracies[mask].max(axis=1)
             mask = mask & np.zeros(len(mask), dtype=bool)  # 重建 mask
             # 重新计算
@@ -223,7 +224,7 @@ def print_statistics(
 
 def main():
     parser = argparse.ArgumentParser(description="Stage 3 打标结果可视化")
-    parser.add_argument("--labels_dir", type=str, default="labels", help="label_skills.py 输出目录")
+    parser.add_argument("--labels_dir", type=str, default="label", help="label_skills.py 输出目录")
     parser.add_argument(
         "--mode", type=str, default="3d",
         choices=["3d", "heatmap", "both"],

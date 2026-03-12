@@ -2,23 +2,19 @@
 
 统一管理所有格斗技能的配置信息，供打标脚本、高层分类器和推理脚本使用。
 
-技能 ID 规则（与 observations.py skill_type_one_hot 对照表一致）:
-    0: r-Cross (右直拳)
-    1: r-swing (右摆拳)
-    2: roundhouse_right_normal_low  (不好用，暂无 model)
-    3: roundhouse_right_fast_high   (右高位鞭腿)
-    4: frontkick_right_normal_body  (右脚正蹬)
-    5: stance (摆架子/防守，无目标时默认)
-    6: roundhouse_right_normal_mid  (暂无 model)
-    7: hook_left_normal_body        (暂无 model)
-    8: roundhouse_left_normal_mid   (暂无 model)
-    9-15: 预留
+新7技能说明 (基于 basic_model/Mimic/ 重训模型):
+    所有技能的 skill_type_idx 和 effector_one_hot_idx 在训练时已统一，
+    observations.py 中直接硬编码固定值:
+        active_effector_one_hot  → [0, 0, 0, 1] (index=3)
+        skill_type_one_hot       → [:, 7] = 1.0
 
-effector_one_hot_idx 格式: [左手=0, 右手=1, 左脚=2, 右脚=3]
+    skill_id 用于标签文件（labels.npy）的整数标识，不影响模型输入。
 
 G1 body_names 中对应肢体:
-    右手: right_wrist_yaw_link  (index 13 in body_names)
-    右脚: right_ankle_roll_link (index 6 in body_names)
+    右手: right_wrist_yaw_link   (index 13 in body_names)
+    左手: left_wrist_yaw_link    (index 10 in body_names)
+    右脚: right_ankle_roll_link  (index  6 in body_names)
+    左脚: left_ankle_roll_link   (index  3 in body_names)
 """
 
 from __future__ import annotations
@@ -29,64 +25,82 @@ from typing import TypedDict
 
 class SkillConfig(TypedDict):
     """单个技能的完整配置信息"""
-    skill_id: int               # 技能 ID (与 skill_type_one_hot 索引一致)
+    skill_id: int               # 技能 ID，用于 labels.npy 标识
     model_filename: str         # .pt 文件名 (位于 model_dir/)
     motion_filename: str        # .npz 文件名 (位于 motion_dir/)
-    effector_body_name: str     # 攻击肢体名称 (必须在 G1FlatEnvCfg.body_names 中)
-    skill_type_idx: int         # skill_type_one_hot 中置 1 的维度
-    effector_one_hot_idx: int   # active_effector_one_hot 中置 1 的维度
+    effector_body_name: str     # 攻击肢体名称 (用于命中检测，必须在 G1FlatEnvCfg.body_names 中)
+    skill_type_idx: int         # skill_type_one_hot 中置 1 的维度（所有新技能统一=7）
+    effector_one_hot_idx: int   # active_effector_one_hot 中置 1 的维度（所有新技能统一=0，即 [1,0,0,0]）
     description: str            # 中文描述
 
 
 # ============================================================
-# 技能注册表 (目前已完成 Stage 2 训练的 5 个技能)
+# 技能注册表 (7 个新技能，基于 basic_model/Mimic/ 模型)
 # 新增技能只需在此添加一项，其余代码自动适配
 # ============================================================
 
 SKILL_CONFIGS: dict[str, SkillConfig] = {
-    "cross": {
+    "cross_right": {
         "skill_id": 0,
-        "model_filename": "cross_108500.pt",
-        "motion_filename": "cross_right_normal_body2.npz",
+        "model_filename": "trim_cross_right_normal_body_2_150.pt",
+        "motion_filename": "trim_cross_right_normal_body_2_150.npz",
         "effector_body_name": "right_wrist_yaw_link",
-        "skill_type_idx": 0,
-        "effector_one_hot_idx": 1,  # 右手
+        "skill_type_idx": 7,    # 所有新技能统一
+        "effector_one_hot_idx": 0,  # 所有新技能统一（含stance），训练时固定为 [1,0,0,0]
         "description": "右手直拳",
     },
-    "swing": {
+    "swing_right": {
         "skill_id": 1,
-        "model_filename": "swing_145500.pt",
-        "motion_filename": "swing_right_normal_head2.npz",
+        "model_filename": "trim_swing_right_normal_head2_150.pt",
+        "motion_filename": "trim_swing_right_normal_head2_150.npz",
         "effector_body_name": "right_wrist_yaw_link",
-        "skill_type_idx": 1,
-        "effector_one_hot_idx": 1,  # 右手
+        "skill_type_idx": 7,
+        "effector_one_hot_idx": 0,
         "description": "右手摆拳",
     },
-    "roundhouse": {
-        "skill_id": 3,
-        "model_filename": "r_h_roundhouse_144000.pt",
-        "motion_filename": "roundhouse_right_fast_high2.npz",
-        "effector_body_name": "right_ankle_roll_link",
-        "skill_type_idx": 3,
-        "effector_one_hot_idx": 3,  # 右脚
-        "description": "右脚高位鞭腿",
+    "hook_left": {
+        "skill_id": 2,
+        "model_filename": "trim_hook_left_normal_body2_150.pt",
+        "motion_filename": "trim_hook_left_normal_body2_150.npz",
+        "effector_body_name": "left_wrist_yaw_link",
+        "skill_type_idx": 7,
+        "effector_one_hot_idx": 0,
+        "description": "左手勾拳",
     },
-    "frontkick": {
-        "skill_id": 4,
-        "model_filename": "r_frontkick_150000.pt",
-        "motion_filename": "frontkick_right_normal_body2.npz",
+    "roundhouse_right": {
+        "skill_id": 3,
+        "model_filename": "trim_roundhouse_right_normal_mid_no_bag_2_150.pt",
+        "motion_filename": "trim_roundhouse_right_normal_mid_no_bag_2_150.npz",
         "effector_body_name": "right_ankle_roll_link",
-        "skill_type_idx": 4,
-        "effector_one_hot_idx": 3,  # 右脚
+        "skill_type_idx": 7,
+        "effector_one_hot_idx": 0,
+        "description": "右脚中位鞭腿",
+    },
+    "roundhouse_left": {
+        "skill_id": 4,
+        "model_filename": "trim_roundhouse_left_normal_mid_no_bag_1_150.pt",
+        "motion_filename": "trim_roundhouse_left_normal_mid_no_bag_1_150.npz",
+        "effector_body_name": "left_ankle_roll_link",
+        "skill_type_idx": 7,
+        "effector_one_hot_idx": 0,
+        "description": "左脚中位鞭腿",
+    },
+    "frontkick_right": {
+        "skill_id": 5,
+        "model_filename": "trim_frontkick_right_fast_body_no_bag_2_150.pt",
+        "motion_filename": "trim_frontkick_right_fast_body_no_bag_2_150.npz",
+        "effector_body_name": "right_ankle_roll_link",
+        "skill_type_idx": 7,
+        "effector_one_hot_idx": 0,
         "description": "右脚正蹬",
     },
     "stance": {
-        "skill_id": 5,
-        "model_filename": "stance_9500.pt",
-        "motion_filename": "stance_orthodox_idle_normal_2_100.npz",
-        "effector_body_name": "right_wrist_yaw_link",  # stance 无攻击，占位
-        "skill_type_idx": 5,
-        "effector_one_hot_idx": -1,  # -1 = 无进攻肢体，active_effector_one_hot 返回全零
+        "skill_id": 6,
+        "model_filename": "trim_stance_orthodox_idle_normal_2_150.pt",
+        "motion_filename": "trim_stance_orthodox_idle_normal_2_150.npz",
+        "effector_body_name": "right_wrist_yaw_link",  # stance 无攻击，占位用右手
+        "skill_type_idx": 7,    # 与攻击技能统一（训练时已确认）
+        "effector_one_hot_idx": 0,  # 与攻击技能统一（训练时已确认）
         "description": "防守站姿 (无目标时默认技能)",
     },
 }
@@ -96,14 +110,23 @@ SKILL_CONFIGS: dict[str, SkillConfig] = {
 # ============================================================
 
 # 参与打标测试的进攻技能（不含 stance，stance 作为兜底标签）
-ATTACK_SKILLS: list[str] = ["cross", "swing", "roundhouse", "frontkick"]
+ATTACK_SKILLS: list[str] = [
+    "cross_right",
+    "swing_right",
+    "hook_left",
+    "roundhouse_right",
+    "roundhouse_left",
+    "frontkick_right",
+]
 
 # 所有技能（含 stance）
 ALL_SKILLS: list[str] = ATTACK_SKILLS + ["stance"]
 
 # 无进攻技能能命中目标时的兜底技能 ID
-STANCE_SKILL_ID: int = SKILL_CONFIGS["stance"]["skill_id"]  # 5
+STANCE_SKILL_ID: int = SKILL_CONFIGS["stance"]["skill_id"]  # 6
 
+# 腿部技能集合（鞭腿/正蹬），用于需要区分手/脚的场景
+KICK_SKILLS: list[str] = ["roundhouse_right", "roundhouse_left", "frontkick_right"]
 
 # ============================================================
 # 路径辅助函数

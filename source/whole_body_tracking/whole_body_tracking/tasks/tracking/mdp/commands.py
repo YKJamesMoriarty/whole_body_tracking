@@ -1227,19 +1227,20 @@ class MotionCommandCfg(CommandTermCfg):
     # Episode 初始化延迟 (秒): spawn 后等待物理引擎稳定再显示目标，防止抖动触发 hit
     spawn_target_delay: float = 1.0
 
-    # 攻击肢体名称 (右脚高位鞭腿: right_ankle_roll_link)
-    effector_body_name: str = "right_ankle_roll_link"
+    # 攻击肢体名称，用于命中检测（不影响观测one-hot，observations.py已硬编码）
+    # 新7技能默认从 cross_right 开始，具体值由 label_skills.py / run_hardcoded_decision.py 覆盖
+    effector_body_name: str = "right_wrist_yaw_link"
 
     # =========================================================================
     # Stage 3 打标 / 多技能切换配置
     # =========================================================================
-    # skill_type_one_hot 中置 1 的维度 (与 observations.py skill_type_one_hot 对照表一致)
-    #   0=cross, 1=swing, 3=roundhouse_high, 4=frontkick, 5=stance
-    skill_type_idx: int = 3       # 默认: 右高位鞭腿
+    # skill_type_one_hot 中置 1 的维度
+    # 新7技能统一训练方式：observations.py 已硬编码为 index=7，此字段仅作记录用
+    skill_type_idx: int = 7       # 新7技能统一值
 
-    # active_effector_one_hot 中置 1 的维度 [左手=0, 右手=1, 左脚=2, 右脚=3]
-    # -1 = 无进攻肢体 (stance)，observations.py 会返回全零向量 [0,0,0,0]
-    effector_one_hot_idx: int = 3 # 默认: 右脚
+    # active_effector_one_hot 中置 1 的维度
+    # 新7技能统一训练方式：observations.py 已硬编码为 index=0，即 [1,0,0,0]，此字段仅作记录用
+    effector_one_hot_idx: int = 0 # 新7技能统一值
 
     # [已注释] 课程学习配置
     # curriculum_level_step: float = 0.25

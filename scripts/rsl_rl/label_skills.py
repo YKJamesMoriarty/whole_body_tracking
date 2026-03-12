@@ -14,14 +14,14 @@
         --num_envs 512 \\
         --grid_spacing 0.05 \\
         --n_episodes 10 \\
-        --model_dir basic_model \\
-        --motion_dir Reference_Motion_IROS \\
-        --output_dir labels
+        --model_dir basic_model/Mimic \\
+        --motion_dir iros_motion/npz \\
+        --output_dir label
 
 输出文件 (保存到 output_dir/):
     grid_points.npy      : (N, 3) 采样点局部坐标
     all_accuracies.npy   : (N, K) 各技能命中率矩阵
-    labels.npy           : (N,)   最优技能 ID (无命中时为 stance_id=5)
+    labels.npy           : (N,)   最优技能 ID (无命中时为 stance_id=6)
     metadata.json        : 采样参数和技能 ID 映射
 
 Isaac Sim 必须在最开始初始化，因此参数解析在 import 之前完成。
@@ -45,11 +45,11 @@ parser.add_argument(
 parser.add_argument("--n_episodes", type=int, default=10, help="每个 (target, skill) 组合测试次数")
 parser.add_argument(
     "--skills", type=str, nargs="+",
-    default=["cross", "swing", "roundhouse", "frontkick"],
+    default=["cross_right", "swing_right", "hook_left", "roundhouse_right", "roundhouse_left", "frontkick_right"],
     help="要测试的技能名称（顺序决定测试顺序）"
 )
-parser.add_argument("--model_dir", type=str, default="basic_model", help=".pt 文件所在目录（相对项目根目录）")
-parser.add_argument("--motion_dir", type=str, default="Reference_Motion_IROS", help=".npz 文件所在目录")
+parser.add_argument("--model_dir", type=str, default="basic_model/Mimic", help=".pt 文件所在目录（相对项目根目录）")
+parser.add_argument("--motion_dir", type=str, default="iros_motion/npz", help=".npz 文件所在目录")
 parser.add_argument("--output_dir", type=str, default="labels", help="结果输出目录")
 parser.add_argument(
     "--count_fall_after_hit_as_success",
