@@ -24,10 +24,15 @@ from isaaclab.utils.math import (
     quat_inv,
     quat_mul,
     sample_uniform,
+    subtract_frame_transforms,
     yaw_quat,
 )
 import isaaclab.sim as sim_utils
-from whole_body_tracking.learning.expert_command_telemetry import clear_expert_commands, set_expert_commands
+from whole_body_tracking.learning.expert_command_telemetry import (
+    clear_expert_commands,
+    set_expert_commands,
+    set_expert_target_rel_pos,
+)
 from whole_body_tracking.learning.router_telemetry import get_router_weights
 from whole_body_tracking.tasks.tracking.stage4.amp_discriminator import AmpDiscriminator
 
@@ -385,8 +390,9 @@ class MotionCommand(CommandTerm):
 
         # Keep compatibility with single-skill expert pretraining:
         # use a fixed active-effector one-hot for all modes/skills.
+        # Format: [left_hand, right_hand, left_foot, right_foot]
         self.active_effector_one_hot = torch.tensor(
-            [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
+            [1.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device
         ).repeat(self.num_envs, 1)
 
         # Hit can only be triggered by hands/feet end effectors.
@@ -493,13 +499,39 @@ class MotionCommand(CommandTerm):
             return
 
         per_skill_commands: list[torch.Tensor] = []
+        per_skill_target_rel: list[torch.Tensor] = []
+        identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).repeat(self.num_envs, 1)
+        try:
+            effector_index = self.cfg.body_names.index("left_wrist_yaw_link")
+        except ValueError:
+            effector_index = -1
+
         for motion in self._expert_motions:
             step_idx = torch.clamp(self.time_steps, max=motion.time_step_total - 1)
             command = torch.cat([motion.joint_pos[step_idx], motion.joint_vel[step_idx]], dim=-1)
             per_skill_commands.append(command)
+            # Expert target = reference left_wrist_yaw_link position (aligned like mimic-refine).
+            if effector_index < 0:
+                target_pos_b = torch.zeros(self.num_envs, 3, device=self.device)
+            else:
+                anchor_pos_w = motion.body_pos_w[step_idx, self.motion_anchor_body_index]
+                anchor_quat_w = motion.body_quat_w[step_idx, self.motion_anchor_body_index]
+                delta_pos_w = self.robot_anchor_pos_w.clone()
+                delta_pos_w[:, 2] = anchor_pos_w[:, 2]
+                delta_ori_w = yaw_quat(quat_mul(self.robot_anchor_quat_w, quat_inv(anchor_quat_w)))
+                target_pos_w = delta_pos_w + quat_apply(delta_ori_w, motion.body_pos_w[step_idx, effector_index] - anchor_pos_w)
+                target_pos_b, _ = subtract_frame_transforms(
+                    self.robot_anchor_pos_w,
+                    self.robot_anchor_quat_w,
+                    target_pos_w,
+                    identity_quat,
+                )
+            per_skill_target_rel.append(target_pos_b)
 
         expert_command_bank = torch.stack(per_skill_commands, dim=1)
         set_expert_commands(expert_command_bank)
+        expert_target_bank = torch.stack(per_skill_target_rel, dim=1)
+        set_expert_target_rel_pos(expert_target_bank)
     
     # [已注释] _get_current_sampling_range: 课程学习采样范围计算，已取消
     # def _get_current_sampling_range(self) -> dict:

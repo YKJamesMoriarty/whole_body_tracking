@@ -9,7 +9,10 @@ from tensordict import TensorDict
 from torch.distributions import Normal
 
 from rsl_rl.networks import EmpiricalNormalization, MLP
-from whole_body_tracking.learning.expert_command_telemetry import get_expert_commands
+from whole_body_tracking.learning.expert_command_telemetry import (
+    get_expert_commands,
+    get_expert_target_rel_pos,
+)
 from whole_body_tracking.learning.router_telemetry import set_router_weights
 
 
@@ -162,6 +165,13 @@ class MoEActorCritic(nn.Module):
         self.distribution: Normal | None = None
         self._last_skill_weights: torch.Tensor | None = None
         self._warned_expert_command_mismatch = False
+        # Target-relative-position lives in the last 28 dims of the policy obs.
+        # We override the first 3 dims of that block for frozen experts.
+        self._task_obs_dim = 28
+        self._target_rel_pos_slice: slice | None = None
+        if num_actor_obs >= self._task_obs_dim:
+            start = num_actor_obs - self._task_obs_dim
+            self._target_rel_pos_slice = slice(start, start + 3)
         Normal.set_default_validate_args(False)
 
     def _load_and_freeze_skill_actors(self, ckpt_paths: list[str]) -> None:
@@ -285,6 +295,19 @@ class MoEActorCritic(nn.Module):
                         device=actor_obs.device,
                         dtype=actor_obs.dtype,
                     )
+                    expert_target_rel = get_expert_target_rel_pos()
+                    if (
+                        expert_target_rel is not None
+                        and self._target_rel_pos_slice is not None
+                        and expert_target_rel.ndim == 3
+                        and expert_target_rel.shape[0] == actor_obs.shape[0]
+                        and expert_target_rel.shape[1] == self.num_skills
+                        and expert_target_rel.shape[2] == 3
+                    ):
+                        expert_obs[:, :, self._target_rel_pos_slice] = expert_target_rel.to(
+                            device=actor_obs.device,
+                            dtype=actor_obs.dtype,
+                        )
                     per_skill = [actor(expert_obs[:, idx, :]) for idx, actor in enumerate(self.skill_actors)]
                 else:
                     if not self._warned_expert_command_mismatch:
