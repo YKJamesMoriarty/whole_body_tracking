@@ -66,6 +66,10 @@ class MotionOnPolicyRunner(OnPolicyRunner):
         指标说明：
         - mean_episode_reward:
           来自 rewbuffer（最近完成的 episode 总奖励均值），是“真实整回合累计奖励”。
+        - mean_episode_length_steps:
+          来自 lenbuffer（最近完成的 episode 步数均值）。
+        - mean_episode_length_s:
+          mean_episode_length_steps 乘以 env.step_dt，单位秒。
         - rollout_return_mean:
           来自 PPO rollout buffer 的 returns 均值（GAE/bootstrap 之后的学习目标），
           这是 critic 要拟合的目标，不等同于完整 episode 总奖励。
@@ -82,6 +86,23 @@ class MotionOnPolicyRunner(OnPolicyRunner):
         rewbuffer = locs.get("rewbuffer", None)
         if rewbuffer is not None and len(rewbuffer) > 0:
             diagnostics["mean_episode_reward"] = float(statistics.mean(rewbuffer))
+
+        # lenbuffer: 仅统计“本 iteration 内结束的 episode”的步数。
+        # 用于观察平均存活时长（falling out 是否减少）。
+        lenbuffer = locs.get("lenbuffer", None)
+        if lenbuffer is not None and len(lenbuffer) > 0:
+            mean_len = float(statistics.mean(lenbuffer))
+            diagnostics["mean_episode_length_steps"] = mean_len
+            # Try wrapper, then unwrapped env, then cfg fallback.
+            step_dt = getattr(self.env, "step_dt", None)
+            if step_dt is None and hasattr(self.env, "unwrapped"):
+                step_dt = getattr(self.env.unwrapped, "step_dt", None)
+            if step_dt is None and hasattr(self.env, "cfg"):
+                cfg = getattr(self.env, "cfg", None)
+                if cfg is not None and hasattr(cfg, "sim") and hasattr(cfg, "decimation"):
+                    step_dt = float(cfg.sim.dt) * float(cfg.decimation)
+            if step_dt is not None:
+                diagnostics["mean_episode_length_s"] = mean_len * float(step_dt)
 
         # storage.returns / storage.values: 来自当前 iteration rollout 的逐时间步张量，
         # 其均值更接近“优化过程的学习信号”，而不是整回合真实累计值。

@@ -56,7 +56,7 @@ parser.add_argument(
 parser.add_argument(
     "--grouped_router_stance_init_bias",
     type=float,
-    default=2.0,
+    default=5.0,
     help="Initial logit bias of stance group in grouped router.",
 )
 parser.add_argument("--hit_radius_start", type=float, default=0.30, help="Stage4 hit radius curriculum start.")

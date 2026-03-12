@@ -52,7 +52,7 @@ parser.add_argument(
 parser.add_argument(
     "--grouped_router_stance_init_bias",
     type=float,
-    default=2.0,
+    default=5.0,
     help="Initial stance-group bias when reconstructing grouped router without agent.yaml.",
 )
 parser.add_argument("--target_visible_time_min", type=float, default=0.3, help="Target visible min seconds for Stage4.")

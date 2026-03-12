@@ -1227,6 +1227,11 @@ class MotionCommand(CommandTerm):
         self.metrics["has_hit"] = self.has_hit.float()
         self.metrics["target_visible"] = self.target_is_visible.float()
         self.metrics["task_rewards_enabled"] = self.task_rewards_enabled.float()
+        # Always expose current hit radius even if hit reward is disabled.
+        if "hit_radius" in self.metrics:
+            self.metrics["hit_radius"][:] = float(self.current_hit_distance_threshold)
+        if "hit_success_rate_window" in self.metrics:
+            self.metrics["hit_success_rate_window"][:] = float(self._hit_success_rate_window)
         self._update_router_weight_metrics()
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
@@ -1292,6 +1297,26 @@ class MotionCommand(CommandTerm):
         root_lin_vel = self.body_lin_vel_w[:, 0].clone()
         root_ang_vel = self.body_ang_vel_w[:, 0].clone()
 
+        # Stage 4: reset joint positions to the stance expert's reference pose (boxing stance)
+        # rather than the default_joint_pos (upright neutral pose).
+        #
+        # In Mimic training, _resample_command sets joint_pos = self.joint_pos = motion.joint_pos[t]
+        # (the motion reference, which is boxing stance at t=0).  This makes joint_pos_rel = ΔJ
+        # (boxing_stance - default) at episode start.
+        #
+        # In Stage 4, self.motion = from_robot_static (1-frame default), so self.joint_pos = default.
+        # That gives joint_pos_rel ≈ 0, which the frozen expert misinterprets as "still need to reach
+        # boxing_stance" → outputs corrective actions → robot walks forward.
+        #
+        # Fix: use the stance expert's joint positions (frame 0) so joint_pos_rel = ΔJ, matching
+        # exactly what the frozen experts saw during Mimic training.
+        if self._expert_motions:
+            stance_motion = self._expert_motions[-1]  # stance is last in STAGE4_SKILL_MOTION_FILENAMES
+            joint_pos = stance_motion.joint_pos[0].unsqueeze(0).expand(self.num_envs, -1).clone()
+        else:
+            joint_pos = self.joint_pos.clone()
+        joint_vel = self.joint_vel.clone()
+
         range_list = [self.cfg.pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
         ranges = torch.tensor(range_list, device=self.device)
         rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device)
@@ -1303,9 +1328,6 @@ class MotionCommand(CommandTerm):
         rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device)
         root_lin_vel[env_ids] += rand_samples[:, :3]
         root_ang_vel[env_ids] += rand_samples[:, 3:]
-
-        joint_pos = self.joint_pos.clone()
-        joint_vel = self.joint_vel.clone()
 
         joint_pos += sample_uniform(*self.cfg.joint_position_range, joint_pos.shape, joint_pos.device)
         soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits[env_ids]

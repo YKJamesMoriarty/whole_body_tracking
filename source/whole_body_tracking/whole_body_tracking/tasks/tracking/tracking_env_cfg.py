@@ -29,12 +29,12 @@ from whole_body_tracking.tasks.tracking.stage4.skill_registry import STAGE4_SKIL
 ##
 
 VELOCITY_RANGE = {
-    "x": (-0.5, 0.5),
-    "y": (-0.5, 0.5),
-    "z": (-0.2, 0.2),
-    "roll": (-0.52, 0.52),
-    "pitch": (-0.52, 0.52),
-    "yaw": (-0.78, 0.78),
+    "x": (-0.1, 0.1),
+    "y": (-0.1, 0.1),
+    "z": (0.0, 0.0),
+    "roll": (-0.0, 0.0),
+    "pitch": (-0.0, 0.0),
+    "yaw": (-0.1, 0.1),
 }
 
 
@@ -410,7 +410,7 @@ class RewardsCfg:
     #   penalty_exponent：惩罚曲线指数
     posture_unstable = RewTerm(
         func=mdp.posture_unstable,
-        weight=000.0,
+        weight=1000.0,
         params={
             "command_name": "motion",
             "tilt_threshold": 0.9397,
@@ -432,7 +432,7 @@ class RewardsCfg:
     # - 特点：该事件奖励已做 dt 归一化，实际单次惩罚≈weight（与 dt 无关）
     robot_falling_penalty = RewTerm(
         func=mdp.robot_falling_penalty_event,
-        weight=-5.0,
+        weight=-0.0,
         params={"termination_term_name": "robot_falling"},
     )
     # action_rate_l2：
