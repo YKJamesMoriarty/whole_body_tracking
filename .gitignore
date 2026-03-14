@@ -42,3 +42,10 @@ _build
 
 **/assets/
 artifacts/
+
+# Local data and models
+data/
+model_yk/
+iros_motion/
+basic_model/
+label/
