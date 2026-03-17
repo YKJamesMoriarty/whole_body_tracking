@@ -73,37 +73,55 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.abspath(log_root_path)
 
     if args_cli.wandb_path:
-        import wandb
-
         run_path = args_cli.wandb_path
+        local_path = pathlib.Path(run_path)
+        if local_path.exists():
+            if local_path.is_file():
+                resume_path = str(local_path)
+                print(f"[INFO]: Loading local model checkpoint: {resume_path}")
+            else:
+                candidates = list(local_path.glob("model_*.pt"))
+                if not candidates:
+                    raise FileNotFoundError(f"No model_*.pt found in directory: {local_path}")
+                candidates.sort(key=lambda p: int(p.stem.split("_")[1]) if "_" in p.stem else -1)
+                resume_path = str(candidates[-1])
+                print(f"[INFO]: Loading local model checkpoint: {resume_path}")
 
-        api = wandb.Api()
-        if "model" in args_cli.wandb_path:
-            run_path = "/".join(args_cli.wandb_path.split("/")[:-1])
-        wandb_run = api.run(run_path)
-        # loop over files in the run
-        files = [file.name for file in wandb_run.files() if "model" in file.name]
-        # files are all model_xxx.pt find the largest filename
-        if "model" in args_cli.wandb_path:
-            file = args_cli.wandb_path.split("/")[-1]
+            if args_cli.motion_file is not None:
+                print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
+                env_cfg.commands.motion.motion_file = args_cli.motion_file
+            else:
+                print("[WARN] motion_file not provided. Environment may fail if motion_file is required.")
         else:
-            file = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))
+            import wandb
 
-        wandb_file = wandb_run.file(str(file))
-        wandb_file.download("./logs/rsl_rl/temp", replace=True)
+            api = wandb.Api()
+            if "model" in args_cli.wandb_path:
+                run_path = "/".join(args_cli.wandb_path.split("/")[:-1])
+            wandb_run = api.run(run_path)
+            # loop over files in the run
+            files = [file.name for file in wandb_run.files() if "model" in file.name]
+            # files are all model_xxx.pt find the largest filename
+            if "model" in args_cli.wandb_path:
+                file = args_cli.wandb_path.split("/")[-1]
+            else:
+                file = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))
 
-        print(f"[INFO]: Loading model checkpoint from: {run_path}/{file}")
-        resume_path = f"./logs/rsl_rl/temp/{file}"
+            wandb_file = wandb_run.file(str(file))
+            wandb_file.download("./logs/rsl_rl/temp", replace=True)
 
-        if args_cli.motion_file is not None:
-            print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
-            env_cfg.commands.motion.motion_file = args_cli.motion_file
+            print(f"[INFO]: Loading model checkpoint from: {run_path}/{file}")
+            resume_path = f"./logs/rsl_rl/temp/{file}"
 
-        art = next((a for a in wandb_run.used_artifacts() if a.type == "motions"), None)
-        if art is None:
-            print("[WARN] No model artifact found in the run.")
-        else:
-            env_cfg.commands.motion.motion_file = str(pathlib.Path(art.download()) / "motion.npz")
+            if args_cli.motion_file is not None:
+                print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
+                env_cfg.commands.motion.motion_file = args_cli.motion_file
+
+            art = next((a for a in wandb_run.used_artifacts() if a.type == "motions"), None)
+            if art is None:
+                print("[WARN] No model artifact found in the run.")
+            else:
+                env_cfg.commands.motion.motion_file = str(pathlib.Path(art.download()) / "motion.npz")
 
     else:
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
