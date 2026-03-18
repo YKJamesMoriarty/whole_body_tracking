@@ -1,6 +1,6 @@
 import gymnasium as gym
 
-from . import agents, flat_env_cfg
+from . import agents, flat_env_cfg, moe_env_cfg
 
 ##
 # Register Gym environments.
@@ -34,5 +34,15 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.G1FlatLowFreqEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatLowFreqPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Tracking-Flat-G1-MoE-StageA-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": moe_env_cfg.G1FlatMoEEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_stage_a_cfg:G1FlatMoEStageAPPORunnerCfg",
     },
 )

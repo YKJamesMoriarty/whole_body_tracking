@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.envs.mdp.terminations import root_height_below_minimum, bad_orientation
 
 from whole_body_tracking.tasks.tracking.mdp.commands import MotionCommand
 from whole_body_tracking.tasks.tracking.mdp.rewards import _get_body_indexes
@@ -36,6 +37,18 @@ def bad_anchor_ori(
     robot_projected_gravity_b = math_utils.quat_rotate_inverse(command.robot_anchor_quat_w, asset.data.GRAVITY_VEC_W)
 
     return (motion_projected_gravity_b[:, 2] - robot_projected_gravity_b[:, 2]).abs() > threshold
+
+
+def robot_fallen(
+    env: ManagerBasedRLEnv,
+    minimum_height: float = 0.25,
+    limit_angle: float = 1.0472,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terminate when the robot has fallen (low root height or excessive tilt)."""
+    low_height = root_height_below_minimum(env, minimum_height, asset_cfg)
+    bad_tilt = bad_orientation(env, limit_angle, asset_cfg)
+    return torch.logical_or(low_height, bad_tilt)
 
 
 def bad_motion_body_pos(
