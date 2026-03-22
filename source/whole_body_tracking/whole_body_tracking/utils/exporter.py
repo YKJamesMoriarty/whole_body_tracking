@@ -85,33 +85,76 @@ def list_to_csv_str(arr, *, decimals: int = 3, delimiter: str = ",") -> str:
     )
 
 
+def _safe_get_default_joint_pos(env: ManagerBasedRLEnv):
+    robot_data = env.scene["robot"].data
+    if hasattr(robot_data, "default_joint_pos_nominal"):
+        return robot_data.default_joint_pos_nominal
+    if hasattr(robot_data, "default_joint_pos"):
+        return robot_data.default_joint_pos
+    return None
+
+
+def _safe_get_action_scale(env: ManagerBasedRLEnv):
+    try:
+        term = env.action_manager.get_term("joint_pos")
+        return term._scale[0]
+    except Exception:
+        return None
+
+
+def _safe_get_anchor_body_info(env: ManagerBasedRLEnv):
+    # Prefer motion command if present (mimic policy), otherwise fall back to MoE action term.
+    try:
+        cmd = env.command_manager.get_term("motion")
+        return cmd.cfg.anchor_body_name, cmd.cfg.body_names
+    except Exception:
+        pass
+    try:
+        act = env.action_manager.get_term("moe")
+        return act.cfg.anchor_body_name, act.cfg.body_names
+    except Exception:
+        return None, None
+
+
 def attach_onnx_metadata(env: ManagerBasedRLEnv, run_path: str, path: str, filename="policy.onnx") -> None:
     onnx_path = os.path.join(path, filename)
 
-    observation_names = env.observation_manager.active_terms["policy"]
-    observation_history_lengths: list[int] = []
+    metadata: dict[str, object] = {"run_path": run_path}
 
-    if env.observation_manager.cfg.policy.history_length is not None:
-        observation_history_lengths = [env.observation_manager.cfg.policy.history_length] * len(observation_names)
-    else:
-        for name in observation_names:
-            term_cfg = env.observation_manager.cfg.policy.to_dict()[name]
-            history_length = term_cfg["history_length"]
-            observation_history_lengths.append(1 if history_length == 0 else history_length)
+    # Observation metadata (optional but useful).
+    if hasattr(env, "observation_manager"):
+        observation_names = env.observation_manager.active_terms.get("policy", [])
+        observation_history_lengths: list[int] = []
+        if getattr(env.observation_manager.cfg.policy, "history_length", None) is not None:
+            observation_history_lengths = [env.observation_manager.cfg.policy.history_length] * len(observation_names)
+        else:
+            for name in observation_names:
+                term_cfg = env.observation_manager.cfg.policy.to_dict()[name]
+                history_length = term_cfg["history_length"]
+                observation_history_lengths.append(1 if history_length == 0 else history_length)
+        metadata["observation_names"] = observation_names
+        metadata["observation_history_lengths"] = observation_history_lengths
 
-    metadata = {
-        "run_path": run_path,
-        "joint_names": env.scene["robot"].data.joint_names,
-        "joint_stiffness": env.scene["robot"].data.joint_stiffness[0].cpu().tolist(),
-        "joint_damping": env.scene["robot"].data.joint_damping[0].cpu().tolist(),
-        "default_joint_pos": env.scene["robot"].data.default_joint_pos_nominal.cpu().tolist(),
-        "command_names": env.command_manager.active_terms,
-        "observation_names": observation_names,
-        "observation_history_lengths": observation_history_lengths,
-        "action_scale": env.action_manager.get_term("joint_pos")._scale[0].cpu().tolist(),
-        "anchor_body_name": env.command_manager.get_term("motion").cfg.anchor_body_name,
-        "body_names": env.command_manager.get_term("motion").cfg.body_names,
-    }
+    # Robot metadata.
+    robot_data = env.scene["robot"].data
+    metadata["joint_names"] = robot_data.joint_names
+    metadata["joint_stiffness"] = robot_data.joint_stiffness[0].cpu().tolist()
+    metadata["joint_damping"] = robot_data.joint_damping[0].cpu().tolist()
+    default_joint_pos = _safe_get_default_joint_pos(env)
+    if default_joint_pos is not None:
+        metadata["default_joint_pos"] = default_joint_pos.cpu().tolist()
+
+    # Command/action info (may differ across tasks).
+    if hasattr(env, "command_manager"):
+        metadata["command_names"] = env.command_manager.active_terms
+    action_scale = _safe_get_action_scale(env)
+    if action_scale is not None:
+        metadata["action_scale"] = action_scale.cpu().tolist()
+    anchor_body_name, body_names = _safe_get_anchor_body_info(env)
+    if anchor_body_name is not None:
+        metadata["anchor_body_name"] = anchor_body_name
+    if body_names is not None:
+        metadata["body_names"] = body_names
 
     model = onnx.load(onnx_path)
 

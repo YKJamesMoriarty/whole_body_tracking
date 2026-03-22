@@ -20,6 +20,26 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
+parser.add_argument(
+    "--targets_file",
+    type=str,
+    default=None,
+    help="Path to MoE attack target file (.npz) for target-based tasks.",
+)
+parser.add_argument(
+    "--hit_radius",
+    type=float,
+    default=None,
+    help="Override MoE hit radius for target hit/termination/visualization.",
+)
+parser.add_argument(
+    "--lock_skill",
+    type=int,
+    default=None,
+    help="Lock one skill per episode for MoE tasks (1/0).",
+)
+parser.add_argument(
+# (No stage-switch arguments in Stage-A1-only mode)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -67,6 +87,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Play with RSL-RL agent."""
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+
+    # Optional MoE overrides
+    if args_cli.targets_file is not None:
+        if hasattr(env_cfg, "commands") and hasattr(env_cfg.commands, "attack_target"):
+            env_cfg.commands.attack_target.target_file = args_cli.targets_file
+        else:
+            print("[WARN] --targets_file provided but env has no attack_target command.")
+    if args_cli.hit_radius is not None:
+        if hasattr(env_cfg, "rewards") and hasattr(env_cfg.rewards, "hit_stage1"):
+            env_cfg.rewards.hit_stage1.params["hit_radius"] = args_cli.hit_radius
+        if hasattr(env_cfg, "terminations") and hasattr(env_cfg.terminations, "hit_target"):
+            env_cfg.terminations.hit_target.params["hit_radius"] = args_cli.hit_radius
+        if hasattr(env_cfg, "commands") and hasattr(env_cfg.commands, "attack_target"):
+            env_cfg.commands.attack_target.visual_radius = args_cli.hit_radius
+    if args_cli.lock_skill is not None:
+        if hasattr(env_cfg, "actions") and hasattr(env_cfg.actions, "moe"):
+            env_cfg.actions.moe.lock_skill_per_episode = bool(args_cli.lock_skill)
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -161,16 +198,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    # 已经修复
-    export_motion_policy_as_onnx(
-        env.unwrapped,
-        ppo_runner.alg.policy,
-        #normalizer=ppo_runner.obs_normalizer,
-        normalizer=getattr(ppo_runner, "obs_normalizer", None),
-        path=export_model_dir,
-        filename="policy.onnx",
-    )
-    attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+    # Export if the environment has a "motion" command (MoE envs do not).
+    try:
+        _ = env.unwrapped.command_manager.get_term("motion")
+        export_motion_policy_as_onnx(
+            env.unwrapped,
+            ppo_runner.alg.policy,
+            normalizer=getattr(ppo_runner, "obs_normalizer", None),
+            path=export_model_dir,
+            filename="policy.onnx",
+        )
+        attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+    except Exception as exc:
+        print(f"[WARN] Skip ONNX export (no motion command): {exc}")
     # reset environment
     obs = env.get_observations() #已经修复
     timestep = 0

@@ -233,6 +233,11 @@ class MoEActionTerm(ActionTerm):
                 self._env._moe_locked_skill.fill_(-1)
             else:
                 self._env._moe_locked_skill[env_ids] = -1
+        if hasattr(self._env, "_moe_last_switch_interval"):
+            if env_ids is None:
+                self._env._moe_last_switch_interval.zero_()
+            else:
+                self._env._moe_last_switch_interval[env_ids] = 0.0
 
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions
@@ -332,6 +337,7 @@ class MoEActionTerm(ActionTerm):
         changed = current_skill != prev_skill
 
         time_since = self._env._moe_time_since_switch
+        prev_time_since = time_since.clone()
         time_since = time_since + 1.0
         time_since[changed] = 0.0
 
@@ -339,6 +345,10 @@ class MoEActionTerm(ActionTerm):
         self._env._moe_prev_skill = current_skill
         self._env._moe_current_skill = current_skill
         self._env._moe_skill_changed = changed.float()
+        if not hasattr(self._env, "_moe_last_switch_interval"):
+            self._env._moe_last_switch_interval = torch.zeros_like(time_since)
+        last_interval = prev_time_since + 1.0
+        self._env._moe_last_switch_interval = torch.where(changed, last_interval, self._env._moe_last_switch_interval)
 
 
 @configclass

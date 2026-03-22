@@ -6,7 +6,6 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.envs.mdp.rewards import is_alive
 from whole_body_tracking.tasks.tracking.moe import events as moe_events
 
 from whole_body_tracking.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
@@ -60,19 +59,26 @@ class MoEObservationsCfg:
 
 @configclass
 class MoERewardsCfg:
-    hit = RewTerm(func=moe_rewards.target_hit, weight=5.0, params={"hit_radius": 0.12})
-    progress = RewTerm(func=moe_rewards.target_progress, weight=3.0, params={"clamp": 0.05})
-    alive = RewTerm(func=is_alive, weight=0.5)
-    entropy = RewTerm(func=moe_rewards.moe_weight_entropy, weight=-0.02)
-    skill_match = RewTerm(func=moe_rewards.skill_match, weight=1.0)
-    switch_penalty = RewTerm(func=moe_rewards.switch_penalty, weight=-2.00)
+    # Stage A-1 (locked): primary hit/progress supervision
+    hit_stage1 = RewTerm(
+        func=moe_rewards.target_hit_stage1, weight=2.0, params={"hit_radius": 0.05, "require_match": True}
+    )
+    progress_stage1 = RewTerm(
+        func=moe_rewards.target_progress_stage1, weight=2.0, params={"clamp": 0.05, "require_match": True}
+    )
+    # Alive reward only when target is not present (disabled during Stage A since target_present=1)
+    alive = RewTerm(func=moe_rewards.alive_when_no_target, weight=0.00)
+    entropy = RewTerm(func=moe_rewards.moe_weight_entropy, weight=-0.00)
+    # Stage A-1 (locked): episode-level supervision
+    skill_match_stage1 = RewTerm(func=moe_rewards.skill_match_stage1, weight=5.0)
+    skill_mismatch_stage1 = RewTerm(func=moe_rewards.skill_mismatch_stage1, weight=-3.0)
 
 
 @configclass
 class MoETerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     fall = DoneTerm(func=mdp.robot_fallen, params={"minimum_height": 0.25, "limit_angle": 1.0472})
-    hit_target = DoneTerm(func=moe_terminations.hit_target, params={"hit_radius": 0.12})
+    hit_target = DoneTerm(func=moe_terminations.hit_target, params={"hit_radius": 0.05, "require_match": True})
 
 
 @configclass
@@ -123,9 +129,8 @@ class G1FlatMoEEnvCfg(TrackingEnvCfg):
             params={},
         )
         # Visualize target hit radius (when rendering).
-        self.commands.attack_target.visual_radius = self.rewards.hit.params.get("hit_radius", 0.12)
-        self.commands.attack_target.hit_rate_threshold = 0.95
-        self.commands.attack_target.auto_stage_switch = True
+        # use stage1 hit radius for visualization by default
+        self.commands.attack_target.visual_radius = self.rewards.hit_stage1.params.get("hit_radius", 0.05)
 
         # shorter episodes for single skill execution
         self.episode_length_s = 5.0

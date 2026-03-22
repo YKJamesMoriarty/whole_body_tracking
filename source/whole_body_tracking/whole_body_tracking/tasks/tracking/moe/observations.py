@@ -19,6 +19,8 @@ def target_present(env: ManagerBasedEnv, command_name: str = "attack_target") ->
     return command.target_present
 
 
+
+
 def time_since_switch(env: ManagerBasedEnv) -> torch.Tensor:
     if not hasattr(env, "_moe_time_since_switch"):
         return torch.zeros(env.num_envs, 1, device=env.device)
