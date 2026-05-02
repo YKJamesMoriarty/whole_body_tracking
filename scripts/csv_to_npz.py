@@ -313,6 +313,14 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
 
 def main():
     """Main function."""
+    # 1. 强制启用 URDF 导入器扩展 (必须在 SimulationContext 实例化之前，SimulationApp 启动之后)
+    # 因为 AppLauncher 在文件上方已经创建了 simulation_app，所以这里直接加载扩展
+    from isaacsim.core.utils.extensions import enable_extension
+    try:
+        enable_extension("isaacsim.asset.importer.urdf")
+    except ImportError:
+        # 如果新路径找不到，尝试兼容旧路径
+        enable_extension("omni.isaac.urdf_importer")
     # Load kit helper
     sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
     sim_cfg.dt = 1.0 / args_cli.output_fps
